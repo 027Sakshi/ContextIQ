@@ -31,10 +31,7 @@ from backend.app.services.llm_service import (
 # CONFIGURATION
 # ==========================================================
 
-API_URL = os.getenv(
-    "CONTEXTIQ_API_URL",
-    "http://127.0.0.1:8000",
-).rstrip("/")
+API_URL = os.getenv("CONTEXTIQ_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
 # ==========================================================
@@ -80,6 +77,7 @@ def api_headers() -> dict:
     # Explicit local-dev fallback only. Production never trusts this header.
     user = current_user()
     return {"X-ContextIQ-User": user} if user else {}
+
 
 # ==========================================================
 # SAFE TEXT / EMAIL BODY CLEANING
@@ -252,12 +250,14 @@ def api_get(
 def api_post(
     path: str,
     params: dict | None = None,
+    json_body: dict | None = None,
     timeout: int = 120,
 ):
     try:
         response = requests.post(
             f"{API_URL}{path}",
             params=params,
+            json=json_body,
             headers=api_headers(),
             timeout=timeout,
         )
@@ -579,6 +579,7 @@ with st.sidebar:
 
     nav_items = [
         "🏠 Dashboard",
+        "🧠 Ask ContextIQ",
         "📥 Intelligent Inbox",
         "✅ Action Center",
         "🔥 Opportunity Radar",
@@ -590,6 +591,7 @@ with st.sidebar:
 
     nav_values = {
         "🏠 Dashboard": "Dashboard",
+        "🧠 Ask ContextIQ": "Ask ContextIQ",
         "📥 Intelligent Inbox": "Intelligent Inbox",
         "✅ Action Center": "Action Center",
         "🔥 Opportunity Radar": "Opportunity Radar",
@@ -3142,11 +3144,82 @@ def render_attachments():
 
 
 # ==========================================================
+# ASK CONTEXTIQ
+# ==========================================================
+
+def ask_contextiq_page():
+    st.markdown("## 🧠 Ask ContextIQ")
+    st.caption("Ask decision-oriented questions across your connected email, documents, CRM, opportunities, contacts, companies, and calendar. Answers are grounded in retrieved evidence.")
+
+    suggestions = [
+        "What should I prioritize today?",
+        "Which revenue or customer relationships appear at risk?",
+        "Which customers are waiting for a response?",
+        "What should I prepare for my upcoming meetings?",
+    ]
+    cols = st.columns(2)
+    for index, suggestion in enumerate(suggestions):
+        with cols[index % 2]:
+            if st.button(suggestion, key=f"ask_suggestion_{index}", use_container_width=True):
+                st.session_state["assistant_question"] = suggestion
+
+    question = st.text_area(
+        "Business question",
+        value=st.session_state.get("assistant_question", ""),
+        placeholder="Example: What deals are most at risk and why?",
+        height=110,
+    )
+
+    if st.button("Ask ContextIQ →", type="primary", use_container_width=True):
+        if not question.strip():
+            st.warning("Enter a business question first.")
+        else:
+            with st.spinner("Retrieving evidence and reasoning across your business context..."):
+                result = api_post(
+                    "/assistant/ask",
+                    json_body={"question": question.strip(), "top_k": 8},
+                    timeout=180,
+                )
+            if result:
+                st.session_state["assistant_result"] = result
+                st.session_state["assistant_question"] = question.strip()
+
+    result = st.session_state.get("assistant_result")
+    if not result:
+        st.info("Sync Gmail or seed the demo workspace, then ask a question. ContextIQ will show the evidence behind its answer.")
+        return
+
+    with st.container(border=True):
+        st.markdown("### ContextIQ answer")
+        st.write(result.get("answer", ""))
+        metrics = st.columns(3)
+        metrics[0].metric("Confidence", percentage(result.get("confidence", 0)))
+        metrics[1].metric("Evidence", len(result.get("evidence", [])))
+        metrics[2].metric("Knowledge items", result.get("document_count", 0))
+        st.caption(f"Reasoning: {result.get('provider', 'local')} • Retrieval: {result.get('retrieval_model', 'unknown')}")
+
+        next_steps = result.get("recommended_next_steps") or []
+        if next_steps:
+            st.markdown("#### Recommended next steps")
+            for item in next_steps:
+                st.write(f"• {item}")
+
+    st.markdown("### Evidence")
+    used = set(result.get("used_evidence") or [])
+    for item in result.get("evidence", []):
+        label = f"{item.get('evidence_id')} · {title_case(item.get('source_type'))} · {item.get('title')}"
+        with st.expander(("✅ " if item.get("evidence_id") in used else "") + label):
+            st.write(item.get("excerpt", ""))
+            st.caption(f"Hybrid relevance: {float(item.get('score') or 0):.3f}")
+
+
+# ==========================================================
 # ROUTING
 # ==========================================================
 
 pages = {
     "Dashboard": dashboard_page,
+    "Ask ContextIQ": ask_contextiq_page,
     "Intelligent Inbox": inbox_page,
     "Action Center": action_center_page,
     "Opportunity Radar": opportunity_page,

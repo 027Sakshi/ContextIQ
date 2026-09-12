@@ -159,6 +159,12 @@ def import_gmail_emails(
                     ]
                 ),
 
+                gmail_thread_id=(
+                    parsed.get(
+                        "gmail_thread_id"
+                    )
+                ),
+
                 sender=(
                     parsed["sender"]
                     or "unknown"

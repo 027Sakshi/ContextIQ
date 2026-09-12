@@ -18,6 +18,7 @@ from backend.app.models import (
     Email,
     Opportunity,
 )
+from backend.app.routes.assistant import router as assistant_router
 from backend.app.routes.calendar import router as calendar_router
 from backend.app.routes.emails import router as email_router
 from backend.app.user_context import MissingUserContextError
@@ -34,11 +35,12 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="ContextIQ API",
     description="AI-powered business context and action intelligence",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(ContextIQUserMiddleware)
+app.include_router(assistant_router)
 app.include_router(calendar_router)
 app.include_router(email_router)
 
@@ -70,11 +72,7 @@ def health_check():
     except Exception:
         database_status = "unhealthy"
 
-    status = (
-        "healthy"
-        if database_status == "healthy"
-        else "degraded"
-    )
+    status = "healthy" if database_status == "healthy" else "degraded"
 
     return {
         "status": status,

@@ -474,6 +474,10 @@ def parse_gmail_message(
         "id"
     )
 
+    gmail_thread_id = message.get(
+        "threadId"
+    )
+
     # ------------------------------------------------------
     # Attachments
     # ------------------------------------------------------
@@ -490,6 +494,7 @@ def parse_gmail_message(
 
     return {
         "gmail_message_id": gmail_message_id,
+        "gmail_thread_id": gmail_thread_id,
 
         # ContextIQ names
         "sender": sender,

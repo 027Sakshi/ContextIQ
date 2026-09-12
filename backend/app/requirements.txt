@@ -1,5 +1,4 @@
 -r ../../requirements.txt
-
 itsdangerous==2.2.0
-
 cryptography==50.0.1
+sentence-transformers>=5.1,<6.0

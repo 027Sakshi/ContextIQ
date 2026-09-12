@@ -44,6 +44,12 @@ class Email(Base):
         nullable=True
     )
 
+    gmail_thread_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True
+    )
+
     # ========================================================
     # EMAIL INFORMATION
     # ========================================================

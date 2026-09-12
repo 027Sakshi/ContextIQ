@@ -500,3 +500,99 @@ Rules:
         # Do not break the ContextIQ analysis pipeline if
         # Gemini is unavailable, rate-limited, or returns an error.
         return fallback
+
+# ==========================================================
+# ASK CONTEXTIQ — EVIDENCE-GROUNDED BUSINESS Q&A
+# ==========================================================
+
+def answer_business_question(question: str, evidence: list[dict]) -> dict:
+    """Answer a business question using only retrieved ContextIQ evidence."""
+    if not evidence:
+        return {
+            "provider": "local-fallback",
+            "answer": "I do not have enough connected business evidence to answer that yet. Sync Gmail, add CRM context, or connect Calendar and try again.",
+            "confidence": 0.0,
+            "used_evidence": [],
+            "recommended_next_steps": ["Connect or sync more business context."],
+        }
+
+    evidence_text = "\n\n".join(
+        f"[{item['evidence_id']}] {item['source_type'].upper()} — {item['title']}\n{item['excerpt']}"
+        for item in evidence
+    )
+
+    client = _get_client()
+    if client is None:
+        top = evidence[:3]
+        summary = "\n".join(
+            f"• [{item['evidence_id']}] {item['title']}: {item['excerpt'][:220]}"
+            for item in top
+        )
+        return {
+            "provider": "local-fallback",
+            "answer": f"Most relevant evidence for your question:\n{summary}",
+            "confidence": min(0.75, 0.35 + (0.1 * len(top))),
+            "used_evidence": [item["evidence_id"] for item in top],
+            "recommended_next_steps": [],
+        }
+
+    prompt = f"""
+You are ContextIQ, an evidence-grounded business decision copilot.
+
+QUESTION
+{question}
+
+RETRIEVED EVIDENCE
+{evidence_text}
+
+Return ONLY valid JSON:
+{{
+  "answer": "clear executive-quality answer with inline evidence references like [E1]",
+  "confidence": 0.0,
+  "used_evidence": ["E1"],
+  "recommended_next_steps": ["specific next step"]
+}}
+
+Rules:
+- Use ONLY the supplied evidence. Never invent a customer, amount, deadline, meeting, commitment, or risk.
+- If evidence is insufficient, say exactly what is missing.
+- Prefer specific business implications over generic email summaries.
+- Cite factual claims with [E#] references.
+- Keep the answer concise and decision-oriented.
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=GEMINI_MODEL,
+            messages=[
+                {"role": "system", "content": "Answer only from supplied business evidence. Output valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=1100,
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        parsed = _extract_json(content)
+        if not parsed:
+            raise ValueError("Model did not return structured JSON")
+        used = [str(item) for item in (parsed.get("used_evidence") or [])]
+        valid_ids = {item["evidence_id"] for item in evidence}
+        used = [item for item in used if item in valid_ids]
+        confidence = float(parsed.get("confidence", 0.75))
+        return {
+            "provider": "gemini",
+            "model": GEMINI_MODEL,
+            "answer": str(parsed.get("answer") or "").strip(),
+            "confidence": max(0.0, min(1.0, confidence)),
+            "used_evidence": used,
+            "recommended_next_steps": [str(item) for item in (parsed.get("recommended_next_steps") or [])][:5],
+        }
+    except Exception:
+        top = evidence[:3]
+        return {
+            "provider": "local-fallback",
+            "answer": "\n".join(f"• [{item['evidence_id']}] {item['title']}: {item['excerpt'][:220]}" for item in top),
+            "confidence": 0.5,
+            "used_evidence": [item["evidence_id"] for item in top],
+            "recommended_next_steps": [],
+        }
