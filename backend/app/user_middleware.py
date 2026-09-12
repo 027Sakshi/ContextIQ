@@ -1,65 +1,27 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from backend.app.user_context import (
-    set_current_user,
-    clear_current_user,
-)
+from backend.app.config import settings
+from backend.app.user_context import clear_current_user, set_current_user
 
 
 class ContextIQUserMiddleware(BaseHTTPMiddleware):
-    """
-    Reads the currently logged-in ContextIQ user's email
-    from the X-ContextIQ-User request header.
+    """Populate request user context for the current development auth flow.
 
-    Example header:
-
-        X-ContextIQ-User: ucarding9@gmail.com
-
-    The email is then stored in the backend request context
-    and can be accessed by:
-
-        get_current_user()
+    X-ContextIQ-User is intentionally a DEVELOPMENT bridge only. Milestone 2
+    replaces it with verified Google authentication. Production deployments
+    must not trust a caller-supplied identity header.
     """
 
-    async def dispatch(
-        self,
-        request: Request,
-        call_next,
-    ):
-        # ----------------------------------------------------
-        # Read user email from frontend request
-        # ----------------------------------------------------
+    async def dispatch(self, request: Request, call_next):
+        user_email = ""
 
-        user_email = request.headers.get(
-            "X-ContextIQ-User",
-            "",
-        ).strip().lower()
+        if settings.allow_dev_user_header:
+            user_email = request.headers.get("X-ContextIQ-User", "")
 
-        # ----------------------------------------------------
-        # Store user in backend context
-        # ----------------------------------------------------
-
-        set_current_user(
-            user_email
-        )
+        set_current_user(user_email)
 
         try:
-
-            # ------------------------------------------------
-            # Continue request
-            # ------------------------------------------------
-
-            response = await call_next(
-                request
-            )
-
-            return response
-
+            return await call_next(request)
         finally:
-
-            # ------------------------------------------------
-            # Always clear user context after request
-            # ------------------------------------------------
-
             clear_current_user()

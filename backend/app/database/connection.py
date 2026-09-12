@@ -1,31 +1,32 @@
-import os
-
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from backend.app.config import settings
 
-DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is not set in .env")
+engine_options: dict = {
+    "pool_pre_ping": True,
+}
+
+if settings.database_url.startswith("sqlite"):
+    engine_options["connect_args"] = {
+        "check_same_thread": False,
+    }
 
 engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True
+    settings.database_url,
+    **engine_options,
 )
 
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
-    bind=engine
+    bind=engine,
 )
 
 
 def get_db():
     db = SessionLocal()
-
     try:
         yield db
     finally:

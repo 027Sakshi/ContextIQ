@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import String, Text, DateTime, Float
+from sqlalchemy import String, Text, DateTime, Float, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.database.base import Base
@@ -8,6 +8,13 @@ from backend.app.database.base import Base
 
 class Email(Base):
     __tablename__ = "emails"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_email",
+            "gmail_message_id",
+            name="uq_emails_user_gmail_message",
+        ),
+    )
 
     # ========================================================
     # PRIMARY KEY
@@ -34,7 +41,6 @@ class Email(Base):
 
     gmail_message_id: Mapped[str | None] = mapped_column(
         String(255),
-        unique=True,
         nullable=True
     )
 

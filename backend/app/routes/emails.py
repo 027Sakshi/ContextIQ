@@ -5,19 +5,14 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
-    Header,
     HTTPException,
-    Query,
     UploadFile
 )
 
 from sqlalchemy.orm import Session
 
 from backend.app.database.connection import get_db
-from backend.app.user_context import (
-    require_current_user,
-    set_current_user,
-)
+from backend.app.user_context import require_current_user
 
 from backend.app.models.email import Email
 from backend.app.models.attachment import Attachment
@@ -71,38 +66,9 @@ ATTACHMENT_ROOT = (
 
 @router.get("/")
 def get_emails(
-    user_email: str | None = Query(
-        default=None,
-        description="Logged-in ContextIQ user email",
-    ),
-    x_contextiq_user: str | None = Header(
-        default=None,
-        alias="X-ContextIQ-User",
-        description="Optional ContextIQ user header",
-    ),
     db: Session = Depends(get_db)
 ):
-
-    # Swagger reliably exposes query parameters, so user_email is
-    # provided here as the primary Swagger testing mechanism.
-    # The existing X-ContextIQ-User header is still supported for
-    # Streamlit and other normal API requests.
-    selected_user = (
-        user_email
-        or x_contextiq_user
-        or ""
-    ).strip().lower()
-
-    if selected_user:
-        set_current_user(selected_user)
-
-    try:
-        current_user = require_current_user()
-    except ValueError as error:
-        raise HTTPException(
-            status_code=401,
-            detail=str(error),
-        )
+    current_user = require_current_user()
 
     emails = (
         db.query(Email)
@@ -904,36 +870,9 @@ def execute_approved_action(
 
 @router.post("/analyze")
 def analyze_all_emails(
-    user_email: str | None = Query(
-        default=None,
-        description="Logged-in ContextIQ user email",
-    ),
-    x_contextiq_user: str | None = Header(
-        default=None,
-        alias="X-ContextIQ-User",
-        description="Optional ContextIQ user header",
-    ),
     db: Session = Depends(get_db)
 ):
-
-    selected_user = (
-        user_email
-        or x_contextiq_user
-        or ""
-    ).strip().lower()
-
-    if selected_user:
-        set_current_user(selected_user)
-
-    try:
-        current_user = require_current_user()
-    except ValueError as error:
-        raise HTTPException(
-            status_code=401,
-            detail=str(error),
-        )
-
-    user_email = current_user
+    user_email = require_current_user()
 
     emails = (
         db.query(Email)

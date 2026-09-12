@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 import json
 import re
@@ -30,7 +31,10 @@ from backend.app.services.llm_service import (
 # CONFIGURATION
 # ==========================================================
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv(
+    "CONTEXTIQ_API_URL",
+    "http://127.0.0.1:8000",
+).rstrip("/")
 
 
 # ==========================================================

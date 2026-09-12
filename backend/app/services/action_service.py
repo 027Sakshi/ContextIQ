@@ -10,6 +10,7 @@ from backend.app.models.email import Email
 from backend.app.models.crm_record import CRMRecord
 from backend.app.models.opportunity import Opportunity
 from backend.app.models.contact import Contact
+from backend.app.user_context import require_current_user
 
 
 # ==========================================================
@@ -148,6 +149,13 @@ def create_or_update_crm(
     Create or update CRM record and opportunity.
     """
 
+    user_email = require_current_user()
+
+    if email.user_email != user_email:
+        raise ValueError(
+            "Email does not belong to the authenticated user."
+        )
+
     sender_email = extract_email_address(
         email.sender
     )
@@ -165,7 +173,8 @@ def create_or_update_crm(
         .filter(
             Contact.email.ilike(
                 sender_email
-            )
+            ),
+            Contact.user_email == user_email
         )
         .first()
     )
@@ -197,7 +206,8 @@ def create_or_update_crm(
         .filter(
             CRMRecord.company_name.ilike(
                 company_name
-            )
+            ),
+            CRMRecord.user_email == user_email
         )
         .first()
     )
@@ -218,6 +228,7 @@ def create_or_update_crm(
 
         # Create new CRM record
         crm_record = CRMRecord(
+            user_email=user_email,
             company_name=company_name,
             contact_name=contact_name,
             deal_value=None,
@@ -242,7 +253,8 @@ def create_or_update_crm(
         .filter(
             Opportunity.company_name.ilike(
                 company_name
-            )
+            ),
+            Opportunity.user_email == user_email
         )
         .first()
     )
@@ -266,6 +278,7 @@ def create_or_update_crm(
 
         # Create new opportunity
         opportunity = Opportunity(
+            user_email=user_email,
             company_name=company_name,
             title=email.subject,
             value=None,
@@ -331,13 +344,16 @@ def execute_action(
         }
 
     # ------------------------------------------------------
-    # Get related email
+    # Get related email, scoped to the authenticated user
     # ------------------------------------------------------
+
+    user_email = require_current_user()
 
     email = (
         db.query(Email)
         .filter(
-            Email.id == action.email_id
+            Email.id == action.email_id,
+            Email.user_email == user_email
         )
         .first()
     )
@@ -491,7 +507,7 @@ def execute_action(
         )
 
         calendar_event = CalendarEvent(
-            owner="ContextIQ",
+            owner=user_email,
             title=(
                 f"Demo - {email.subject}"
             ),

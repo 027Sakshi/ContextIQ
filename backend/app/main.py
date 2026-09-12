@@ -1,90 +1,84 @@
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from backend.app.user_middleware import ContextIQUserMiddleware
+
+from backend.app.config import settings
 from backend.app.database.base import Base
 from backend.app.database.connection import engine
-from backend.app.routes.calendar import router as calendar_router
+from backend.app.database.schema import ensure_schema_compatibility
 from backend.app.models import (
-    Email,
-    Contact,
-    Company,
-    CRMRecord,
-    Opportunity,
-    CalendarEvent,
-    Attachment,
     Action,
+    Attachment,
+    CalendarEvent,
+    Company,
+    Contact,
+    CRMRecord,
+    Email,
+    Opportunity,
 )
-
+from backend.app.routes.calendar import router as calendar_router
 from backend.app.routes.emails import router as email_router
+from backend.app.user_context import MissingUserContextError
+from backend.app.user_middleware import ContextIQUserMiddleware
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility(engine)
+    yield
 
 
 app = FastAPI(
     title="ContextIQ API",
-    description="AI-Powered Business Email Intelligence System",
-    version="1.0.0"
-)
-app.include_router(
-    calendar_router
-)
-app.add_middleware(
-    ContextIQUserMiddleware
+    description="AI-powered business context and action intelligence",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
-# ==========================================================
-# CREATE DATABASE TABLES
-# ==========================================================
-
-Base.metadata.create_all(
-    bind=engine
-)
+app.add_middleware(ContextIQUserMiddleware)
+app.include_router(calendar_router)
+app.include_router(email_router)
 
 
-# ==========================================================
-# DATABASE MIGRATION
-# ==========================================================
-
-with engine.begin() as connection:
-
-    connection.execute(
-        text(
-            """
-            ALTER TABLE emails
-            ADD COLUMN IF NOT EXISTS gmail_message_id
-            VARCHAR(255);
-            """
-        )
+@app.exception_handler(MissingUserContextError)
+async def missing_user_handler(_: Request, error: MissingUserContextError):
+    return JSONResponse(
+        status_code=401,
+        content={"detail": str(error)},
     )
 
 
-# ==========================================================
-# ROUTES
-# ==========================================================
-
-app.include_router(
-    email_router
-)
-
-
-# ==========================================================
-# ROOT
-# ==========================================================
-
 @app.get("/")
 def root():
-
     return {
         "message": "ContextIQ backend is running",
-        "status": "success"
+        "status": "success",
+        "environment": settings.app_env,
     }
 
 
-# ==========================================================
-# HEALTH
-# ==========================================================
-
 @app.get("/health")
 def health_check():
+    database_status = "healthy"
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        database_status = "unhealthy"
+
+    status = (
+        "healthy"
+        if database_status == "healthy"
+        else "degraded"
+    )
 
     return {
-        "status": "healthy"
+        "status": status,
+        "database": database_status,
+        "environment": settings.app_env,
+        "dev_user_header_enabled": settings.allow_dev_user_header,
     }
