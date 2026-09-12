@@ -73,15 +73,13 @@ def current_user() -> str:
 
 
 def api_headers() -> dict:
+    token = str(st.session_state.get("contextiq_session_token", "")).strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+
+    # Explicit local-dev fallback only. Production never trusts this header.
     user = current_user()
-
-    if not user:
-        return {}
-
-    return {
-        "X-ContextIQ-User": user,
-    }
-
+    return {"X-ContextIQ-User": user} if user else {}
 
 # ==========================================================
 # SAFE TEXT / EMAIL BODY CLEANING

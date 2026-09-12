@@ -4,136 +4,63 @@ import base64
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 
 # ==========================================================
-# PATHS
+# GOOGLE OAUTH / SERVICES
 # ==========================================================
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-CREDENTIALS_FILE = (
-    BASE_DIR / "credentials" / "credentials.json"
+from backend.app.services.google_token_store import (
+    load_google_credentials,
+    save_google_credentials,
 )
+from backend.app.user_context import require_current_user
 
-TOKEN_FILE = (
-    BASE_DIR / "data" / "gmail" / "token.json"
-)
-
-
-# ==========================================================
-# GOOGLE OAUTH SCOPES
-# ==========================================================
-
-SCOPES = [
+WORKSPACE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
 ]
 
 
-# ==========================================================
-# GOOGLE AUTHENTICATION
-# ==========================================================
+def get_google_credentials(user_email: str | None = None):
+    """Load and refresh the authenticated user's encrypted Google token."""
+    user_email = user_email or require_current_user()
+    creds = load_google_credentials(user_email, scopes=WORKSPACE_SCOPES)
 
-def get_google_credentials():
-    """
-    Create or refresh Google OAuth credentials.
-    """
-
-    TOKEN_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    creds = None
-
-    if TOKEN_FILE.exists():
-
+    if creds and creds.expired and creds.refresh_token:
         try:
-
-            creds = (
-                Credentials
-                .from_authorized_user_file(
-                    str(TOKEN_FILE),
-                    SCOPES
-                )
-            )
-
-        except Exception:
-
-            creds = None
-
-    if (
-        creds
-        and creds.expired
-        and creds.refresh_token
-    ):
-
-        try:
-
-            creds.refresh(
-                Request()
-            )
-
-        except Exception:
-
-            creds = None
+            creds.refresh(Request())
+            save_google_credentials(user_email, creds)
+        except Exception as error:
+            raise RuntimeError(
+                "Google authorization expired. Sign in with Google again."
+            ) from error
 
     if not creds or not creds.valid:
-
-        if not CREDENTIALS_FILE.exists():
-
-            raise FileNotFoundError(
-                "Google credentials file not found: "
-                f"{CREDENTIALS_FILE}"
-            )
-
-        flow = (
-            InstalledAppFlow
-            .from_client_secrets_file(
-                str(CREDENTIALS_FILE),
-                SCOPES
-            )
+        raise RuntimeError(
+            "Google Workspace is not connected for this ContextIQ user. "
+            "Sign in with Google to connect Gmail and Calendar."
         )
-
-        creds = flow.run_local_server(
-            port=0
-        )
-
-        with open(
-            TOKEN_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            file.write(
-                creds.to_json()
-            )
 
     return creds
 
 
-# ==========================================================
-# SERVICES
-# ==========================================================
-
-def get_gmail_service():
-
+def get_gmail_service(user_email: str | None = None):
     return build(
         "gmail",
         "v1",
-        credentials=get_google_credentials()
+        credentials=get_google_credentials(user_email),
+        cache_discovery=False,
     )
 
 
-def get_calendar_service():
-
+def get_calendar_service(user_email: str | None = None):
     return build(
         "calendar",
         "v3",
-        credentials=get_google_credentials()
+        credentials=get_google_credentials(user_email),
+        cache_discovery=False,
     )
 
 

@@ -42,6 +42,7 @@ firebase-adminsdk*.json
 
 # Runtime Gmail/user data
 data/gmail/
+data/google_tokens/
 data/attachments/
 
 # Databases

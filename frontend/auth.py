@@ -1,582 +1,213 @@
 import json
 import os
 import re
+import secrets
 from pathlib import Path
-from urllib.parse import urlencode
 
 import streamlit as st
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from google_auth_oauthlib.flow import Flow
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-
-# ==========================================================
-# PATHS / GOOGLE OAUTH CONFIG
-# ==========================================================
+from backend.app.auth_session import create_session_token
+from backend.app.config import settings
+from backend.app.services.google_token_store import save_google_credentials
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-GOOGLE_OAUTH_CLIENT_FILE = (
-    PROJECT_ROOT / "credentials" / "google_oauth_client.json"
-)
-
-GOOGLE_OAUTH_REDIRECT_URI = os.getenv(
-    "GOOGLE_OAUTH_REDIRECT_URI",
-    "http://localhost:8501",
-).strip()
-
+GOOGLE_OAUTH_CLIENT_FILE = PROJECT_ROOT / "credentials" / "google_oauth_client.json"
 GOOGLE_OAUTH_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
 ]
 
 
-# ==========================================================
-# BASIC HELPERS
-# ==========================================================
-
 def is_valid_email(email: str) -> bool:
-    email = (email or "").strip()
-
-    if not email:
-        return False
-
-    return (
-        re.fullmatch(
-            r"[^@\s]+@[^@\s]+\.[^@\s]+",
-            email,
-        )
-        is not None
-    )
+    return bool(email and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email.strip()))
 
 
-def name_from_email(email: str) -> str:
-    username = (
-        email.split("@", 1)[0]
-        .replace(".", " ")
-        .replace("_", " ")
-        .replace("-", " ")
-    )
+def _name_from_email(email: str) -> str:
+    return email.split("@")[0].replace(".", " ").replace("_", " ").replace("-", " ").title()
 
-    return username.title()
-
-
-# ==========================================================
-# SESSION INITIALIZATION
-# ==========================================================
 
 def initialize_auth():
     defaults = {
         "logged_in": False,
         "user_email": "",
         "user_name": "",
+        "contextiq_session_token": "",
         "google_oauth_state": "",
         "google_profile": {},
     }
-
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-# ==========================================================
-# DIRECT EMAIL LOGIN
-# ==========================================================
-
-def login_user(
-    email: str,
-    name: str | None = None,
-) -> bool:
-    """
-    ContextIQ local/demo login.
-
-    Any syntactically valid email address can be used.
-    This is intentionally separate from Google OAuth.
-    """
-
-    normalized = (
-        email or ""
-    ).strip().lower()
-
-    if not is_valid_email(
-        normalized
-    ):
+def login_user(email: str, name: str | None = None, *, issue_session: bool = True) -> bool:
+    email = (email or "").strip().lower()
+    if not is_valid_email(email):
         return False
-
-    st.session_state[
-        "logged_in"
-    ] = True
-
-    st.session_state[
-        "user_email"
-    ] = normalized
-
-    st.session_state[
-        "user_name"
-    ] = (
-        name.strip()
-        if name and name.strip()
-        else name_from_email(
-            normalized
-        )
-    )
-
-    # Clear stale page/data from a previous user.
-    st.session_state[
-        "page"
-    ] = "Dashboard"
-
-    st.session_state[
-        "analysis"
-    ] = None
-
-    st.session_state[
-        "business_insights"
-    ] = {}
-
+    resolved_name = (name or _name_from_email(email)).strip()
+    st.session_state.logged_in = True
+    st.session_state.user_email = email
+    st.session_state.user_name = resolved_name
+    if issue_session:
+        st.session_state.contextiq_session_token = create_session_token(email, resolved_name)
     return True
 
 
 def logout_user():
-    clear_keys = [
-        "logged_in",
-        "user_email",
-        "user_name",
-        "google_oauth_state",
-        "google_profile",
-        "analysis",
-        "page",
+    for key in [
+        "logged_in", "user_email", "user_name", "contextiq_session_token",
+        "google_oauth_state", "google_profile", "analysis", "page",
         "business_insights",
-    ]
-
-    for key in clear_keys:
-        st.session_state.pop(
-            key,
-            None,
-        )
-
+    ]:
+        st.session_state.pop(key, None)
     initialize_auth()
 
 
-# ==========================================================
-# GOOGLE OAUTH
-# ==========================================================
-
 def google_oauth_configured() -> bool:
-    return (
-        GOOGLE_OAUTH_CLIENT_FILE.exists()
-    )
+    return GOOGLE_OAUTH_CLIENT_FILE.exists()
+
+
+def _load_google_client_config() -> dict:
+    with open(GOOGLE_OAUTH_CLIENT_FILE, "r", encoding="utf-8") as file:
+        config = json.load(file)
+    if "web" not in config:
+        raise ValueError("Google OAuth client must be a Web application client.")
+    return config
+
+
+def _oauth_state_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(settings.session_secret, salt="contextiq-google-oauth-v1")
+
+
+def _create_oauth_state() -> str:
+    return _oauth_state_serializer().dumps({"nonce": secrets.token_urlsafe(18)})
+
+
+def _verify_oauth_state(state: str) -> bool:
+    try:
+        payload = _oauth_state_serializer().loads(state, max_age=600)
+        return isinstance(payload, dict) and bool(payload.get("nonce"))
+    except (BadSignature, SignatureExpired):
+        return False
 
 
 def create_google_authorization_url() -> str:
     flow = Flow.from_client_secrets_file(
-        str(
-            GOOGLE_OAUTH_CLIENT_FILE
-        ),
-        scopes=GOOGLE_OAUTH_SCOPES,
+        str(GOOGLE_OAUTH_CLIENT_FILE), scopes=GOOGLE_OAUTH_SCOPES
     )
-
-    flow.redirect_uri = (
-        GOOGLE_OAUTH_REDIRECT_URI
+    flow.redirect_uri = settings.google_oauth_redirect_uri
+    state = _create_oauth_state()
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent select_account",
+        state=state,
     )
-
-    authorization_url, state = (
-        flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            prompt="select_account",
-        )
-    )
-
-    st.session_state[
-        "google_oauth_state"
-    ] = state
-
     return authorization_url
 
 
-def handle_google_callback() -> bool:
-    code = st.query_params.get(
-        "code"
-    )
-
-    returned_state = st.query_params.get(
-        "state"
-    )
-
+def handle_google_oauth_callback() -> bool:
+    code = st.query_params.get("code")
+    returned_state = st.query_params.get("state")
     if not code:
         return False
 
-    expected_state = (
-        st.session_state.get(
-            "google_oauth_state",
-            "",
-        )
-    )
-
-    if not expected_state:
-        st.error(
-            "Google sign-in session expired. "
-            "Please click Continue with Google again."
-        )
-        return False
-
-    if returned_state != expected_state:
-        st.error(
-            "Google sign-in verification failed. "
-            "Please try again."
-        )
+    if not returned_state or not _verify_oauth_state(str(returned_state)):
+        st.error("Google sign-in validation failed or expired. Please try again.")
         return False
 
     try:
         flow = Flow.from_client_secrets_file(
-            str(
-                GOOGLE_OAUTH_CLIENT_FILE
-            ),
+            str(GOOGLE_OAUTH_CLIENT_FILE),
             scopes=GOOGLE_OAUTH_SCOPES,
-            state=expected_state,
+            state=str(returned_state),
         )
-
-        flow.redirect_uri = (
-            GOOGLE_OAUTH_REDIRECT_URI
-        )
-
-        authorization_response = (
-            GOOGLE_OAUTH_REDIRECT_URI
-            + "?"
-            + urlencode(
-                {
-                    "code": code,
-                    "state": returned_state,
-                }
-            )
-        )
-
-        flow.fetch_token(
-            authorization_response=authorization_response
-        )
-
+        flow.redirect_uri = settings.google_oauth_redirect_uri
+        flow.fetch_token(code=code)
         credentials = flow.credentials
 
+        client_config = _load_google_client_config()["web"]
         token_info = id_token.verify_oauth2_token(
             credentials.id_token,
             google_requests.Request(),
+            audience=client_config["client_id"],
             clock_skew_in_seconds=10,
         )
 
-        email = (
-            token_info.get(
-                "email",
-                "",
-            )
-            .strip()
-            .lower()
-        )
+        email = str(token_info.get("email") or "").strip().lower()
+        name = str(token_info.get("name") or _name_from_email(email)).strip()
+        if not is_valid_email(email):
+            raise ValueError("Google did not return a valid email address.")
+        if token_info.get("email_verified") is False:
+            raise ValueError("Google account email is not verified.")
 
-        name = (
-            token_info.get(
-                "name"
-            )
-            or name_from_email(
-                email
-            )
-        )
-
-        if not is_valid_email(
-            email
-        ):
-            raise ValueError(
-                "Google did not return a valid account email."
-            )
-
-        login_user(
-            email=email,
-            name=name,
-        )
-
-        st.session_state[
-            "google_profile"
-        ] = token_info
-
-        st.query_params.clear()
-
+        save_google_credentials(email, credentials)
+        login_user(email, name)
+        st.session_state.google_profile = token_info
+        st.session_state.google_oauth_state = ""
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         return True
-
     except Exception as error:
-        st.error(
-            "Google sign-in failed: "
-            f"{error}"
-        )
+        st.error(f"Google sign-in failed: {error}")
         return False
 
 
-# ==========================================================
-# LOGIN PAGE
-# ==========================================================
-
 def show_login_page() -> bool:
     initialize_auth()
-
-    if handle_google_callback():
+    if handle_google_oauth_callback():
         st.rerun()
-
-    if st.session_state.get(
-        "logged_in",
-        False,
-    ):
+    if st.session_state.logged_in:
         return True
 
-    # Hide sidebar while logged out.
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] {
-            display: none !important;
-        }
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"]{display:none}.block-container{max-width:1080px;padding-top:4rem}
+    .ctx-login{padding:2.6rem;border:1px solid rgba(128,128,128,.2);border-radius:28px;
+    background:linear-gradient(135deg,rgba(78,104,255,.16),rgba(0,184,170,.08));margin-bottom:1.3rem}
+    .ctx-login h1{font-size:3.4rem;letter-spacing:-.05em;margin:.2rem 0}.ctx-login p{font-size:1.06rem;opacity:.72;max-width:720px}
+    </style>
+    <div class="ctx-login"><small>AI BUSINESS DECISION INTELLIGENCE</small><h1>ContextIQ</h1>
+    <p>Connect your Google account once. ContextIQ securely links Gmail and Calendar to your private business workspace, then turns communication into evidence-backed decisions and actions.</p></div>
+    """, unsafe_allow_html=True)
 
-        .block-container {
-            max-width: 1160px;
-            padding-top: 3rem;
-            padding-bottom: 3rem;
-        }
-
-        .login-hero {
-            padding: 2.2rem 2.4rem;
-            border-radius: 28px;
-            border: 1px solid rgba(128,128,128,.22);
-            background:
-                linear-gradient(
-                    135deg,
-                    rgba(79,107,255,.18),
-                    rgba(0,188,172,.10)
-                );
-            margin-bottom: 1.4rem;
-        }
-
-        .login-eyebrow {
-            font-size: .76rem;
-            font-weight: 800;
-            letter-spacing: .15em;
-            text-transform: uppercase;
-            opacity: .62;
-        }
-
-        .login-brand {
-            font-size: 3.35rem;
-            line-height: 1;
-            font-weight: 900;
-            letter-spacing: -.055em;
-            margin-top: .35rem;
-        }
-
-        .login-tagline {
-            margin-top: .65rem;
-            font-size: 1.05rem;
-            line-height: 1.55;
-            opacity: .72;
-            max-width: 760px;
-        }
-
-        .feature-card {
-            padding: 1rem 1.05rem;
-            border: 1px solid rgba(128,128,128,.18);
-            border-radius: 17px;
-            margin-bottom: .75rem;
-        }
-
-        .feature-title {
-            font-weight: 800;
-            margin-bottom: .15rem;
-        }
-
-        .feature-text {
-            opacity: .68;
-            font-size: .87rem;
-            line-height: 1.45;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="login-hero">
-            <div class="login-eyebrow">
-                AI Business Email Intelligence
-            </div>
-            <div class="login-brand">
-                ContextIQ
-            </div>
-            <div class="login-tagline">
-                Turn inbox noise into business intelligence.
-                Understand the email, connect its business context,
-                predict consequence, and act with confidence.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    left, right = st.columns(
-        [1.15, 0.85],
-        gap="large",
-    )
-
+    left, right = st.columns([1.1, .9], gap="large")
     with left:
-        with st.container(
-            border=True
-        ):
-            st.markdown(
-                "## Welcome back"
-            )
-
-            st.caption(
-                "Sign in to open your ContextIQ command center."
-            )
-
-            # --------------------------------------------------
-            # REAL GOOGLE LOGIN
-            # --------------------------------------------------
-
+        with st.container(border=True):
+            st.markdown("## Sign in")
+            st.caption("Use the Google account whose Gmail and Calendar you want ContextIQ to understand.")
             if google_oauth_configured():
                 try:
-                    google_url = (
-                        create_google_authorization_url()
-                    )
-
-                    st.link_button(
-                        "🔵 Continue with Google",
-                        google_url,
-                        use_container_width=True,
-                    )
-
-                    st.caption(
-                        "Google will let you choose the account "
-                        "currently signed into this browser."
-                    )
-
+                    st.link_button("Continue with Google", create_google_authorization_url(), use_container_width=True, type="primary")
                 except Exception as error:
-                    st.error(
-                        f"Google OAuth configuration error: {error}"
-                    )
-
+                    st.error(f"Google OAuth is not ready: {error}")
             else:
-                st.info(
-                    "Google sign-in is not configured yet. "
-                    "Email sign-in below works independently."
-                )
+                st.warning("Google OAuth client is not configured yet.")
+                st.caption("Add credentials/google_oauth_client.json (Web application OAuth client).")
 
-            st.markdown(
-                """
-                <div style="
-                    text-align:center;
-                    opacity:.5;
-                    margin:1.1rem 0;
-                    font-size:.9rem;
-                ">
-                    OR
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # --------------------------------------------------
-            # DIRECT EMAIL LOGIN
-            # --------------------------------------------------
-
-            with st.form(
-                "direct_email_login_form",
-                clear_on_submit=False,
-            ):
-                email = st.text_input(
-                    "Work email",
-                    placeholder="you@company.com",
-                    key="direct_login_email",
-                )
-
-                submit = st.form_submit_button(
-                    "Continue with Email →",
-                    use_container_width=True,
-                    type="primary",
-                )
-
-            if submit:
-                normalized = (
-                    email or ""
-                ).strip().lower()
-
-                if not normalized:
-                    st.error(
-                        "Please enter your email address."
-                    )
-
-                elif not is_valid_email(
-                    normalized
-                ):
-                    st.error(
-                        "Please enter a valid email address, "
-                        "for example name@company.com."
-                    )
-
-                else:
-                    login_user(
-                        normalized
-                    )
-
-                    # Force Streamlit to run the main app
-                    # immediately after successful login.
-                    st.rerun()
-
-            st.caption(
-                "Direct email login is available for the ContextIQ prototype."
-            )
-
+            if settings.allow_dev_email_login:
+                st.divider()
+                st.caption("Local development fallback")
+                email = st.text_input("Developer email", placeholder="you@example.com")
+                if st.button("Continue in dev mode", use_container_width=True):
+                    if login_user(email):
+                        st.rerun()
+                    st.error("Enter a valid email address.")
     with right:
-        st.markdown(
-            """
-            <div class="feature-card">
-                <div class="feature-title">
-                    🔗 Business Context Graph
-                </div>
-                <div class="feature-text">
-                    Connect email, people, company, CRM,
-                    previous conversations, documents, and meetings.
-                </div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-title">
-                    ⚠️ Consequence Intelligence
-                </div>
-                <div class="feature-text">
-                    Understand what the business could lose or delay
-                    when an important email is ignored.
-                </div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-title">
-                    🤖 Risk-Aware Actions
-                </div>
-                <div class="feature-text">
-                    Recommend, approve, execute, and track
-                    business actions safely.
-                </div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-title">
-                    📊 Explainable Decisions
-                </div>
-                <div class="feature-text">
-                    Show why ContextIQ prioritized an email,
-                    identified risk, and recommended an action.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+        st.markdown("### One identity, one workspace")
+        st.write("• Google identity verified at sign-in")
+        st.write("• Gmail read access for intelligence")
+        st.write("• Calendar event access for planning/actions")
+        st.write("• Per-user encrypted refresh tokens")
+        st.write("• Signed ContextIQ API session")
+        st.info("ContextIQ never commits Google tokens or OAuth credentials to Git.")
     return False

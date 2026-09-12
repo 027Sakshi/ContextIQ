@@ -33,23 +33,15 @@ _APP_ENV = os.getenv("CONTEXTIQ_ENV", "development").strip().lower()
 class Settings:
     app_env: str = _APP_ENV
     database_url: str = os.getenv("DATABASE_URL", _default_database_url()).strip()
-    api_url: str = os.getenv(
-        "CONTEXTIQ_API_URL",
-        "http://127.0.0.1:8000",
-    ).rstrip("/")
-    allow_dev_user_header: bool = _env_bool(
-        "ALLOW_DEV_USER_HEADER",
-        _APP_ENV != "production",
-    )
-    demo_user_email: str = os.getenv(
-        "DEMO_USER_EMAIL",
-        "demo@contextiq.local",
-    ).strip().lower()
+    api_url: str = os.getenv("CONTEXTIQ_API_URL", "http://127.0.0.1:8000").rstrip("/")
+    allow_dev_user_header: bool = _env_bool("ALLOW_DEV_USER_HEADER", False)
+    allow_dev_email_login: bool = _env_bool("ALLOW_DEV_EMAIL_LOGIN", _APP_ENV != "production")
+    session_secret: str = os.getenv("CONTEXTIQ_SESSION_SECRET", "contextiq-dev-only-change-me").strip()
+    session_ttl_seconds: int = int(os.getenv("CONTEXTIQ_SESSION_TTL_SECONDS", "43200"))
+    google_oauth_redirect_uri: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8501").strip()
+    demo_user_email: str = os.getenv("DEMO_USER_EMAIL", "demo@contextiq.local").strip().lower()
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "").strip()
-    gemini_model: str = os.getenv(
-        "GEMINI_MODEL",
-        "gemini-3.8-flash",
-    ).strip()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 
     @property
     def is_production(self) -> bool:
