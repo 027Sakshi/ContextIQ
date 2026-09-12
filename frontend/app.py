@@ -584,7 +584,7 @@ with st.sidebar:
     )
 
     st.caption(
-        "From Inbox Noise to Business Intelligence"
+        "Evidence-grounded business decisions from your inbox"
     )
 
     st.divider()
@@ -600,7 +600,7 @@ with st.sidebar:
     st.divider()
 
     nav_items = [
-        "🏠 Dashboard",
+        "🏠 Command Center",
         "🧠 Ask ContextIQ",
         "📥 Intelligent Inbox",
         "✅ Action Center",
@@ -612,7 +612,7 @@ with st.sidebar:
     ]
 
     nav_values = {
-        "🏠 Dashboard": "Dashboard",
+        "🏠 Command Center": "Dashboard",
         "🧠 Ask ContextIQ": "Ask ContextIQ",
         "📥 Intelligent Inbox": "Intelligent Inbox",
         "✅ Action Center": "Action Center",
@@ -736,7 +736,7 @@ st.markdown(
             ContextIQ
         </div>
         <p class="ctx-subtitle">
-            From Inbox Noise to Business Intelligence
+            Evidence-grounded business decisions from your inbox
         </p>
         <div class="ctx-user">
             👤 {current_user()}
@@ -749,8 +749,7 @@ st.markdown(
 st.markdown(
     """
     <div class="ctx-flow">
-        Inbox → Understanding → Business Context →
-        Consequence → Decision → Action
+        Inbox → Business Memory → Evidence → Reasoning → Human Approval → Action
     </div>
     """,
     unsafe_allow_html=True,
@@ -792,6 +791,35 @@ rejected_actions = [
     a for a in all_actions
     if a.get("status") == "rejected"
 ]
+
+
+def _graph_label(value: Any) -> str:
+    return str(value or "Unknown").replace('"', "'")[:80]
+
+
+def context_graph_dot(email_item: dict, result: dict) -> str:
+    context = result.get("business_context", {}) or {}
+    contact = context.get("contact") or {}
+    company = context.get("company") or {}
+    crm = context.get("crm") or {}
+    opportunity = context.get("opportunity") or {}
+    lines = [
+        'digraph ContextIQ {',
+        'rankdir=LR;',
+        'graph [bgcolor="transparent", pad="0.2"];',
+        'node [shape=box, style="rounded", fontname="Arial"];',
+        f'email [label="Email\n{_graph_label(email_item.get("subject"))}"];',
+        f'contact [label="Contact\n{_graph_label(contact.get("name") or email_item.get("sender"))}"];',
+        f'company [label="Company\n{_graph_label(company.get("name") or contact.get("company") or "Unlinked")}"];',
+        f'crm [label="CRM\n{_graph_label(crm.get("stage") or crm.get("status") or "No record")}"];',
+        f'opp [label="Opportunity\n{_graph_label(opportunity.get("title") or "No active link")}"];',
+        'email -> contact;',
+        'contact -> company;',
+        'company -> crm;',
+        'company -> opp;',
+        '}',
+    ]
+    return "\n".join(lines)
 
 
 # ==========================================================
@@ -1148,6 +1176,9 @@ def render_email_card(
             {},
         ) or {}
 
+        st.markdown("#### 🕸️ Context Relationship Map")
+        st.graphviz_chart(context_graph_dot(email_item, result), use_container_width=True)
+
         st.markdown(
             "#### 📅 Calendar Intelligence"
         )
@@ -1341,6 +1372,33 @@ def render_email_card(
 # ==========================================================
 
 def dashboard_page():
+    st.title("🏠 ContextIQ Command Center")
+    st.caption("A decision-first view of what needs attention, why it matters, and what ContextIQ can safely do next.")
+
+    brief = st.session_state.get("morning_brief")
+    if st.button("✨ Generate AI Morning Brief", use_container_width=True):
+        with st.spinner("Building an evidence-grounded operating brief..."):
+            brief = api_post(
+                "/assistant/ask",
+                json_body={
+                    "question": "What should I prioritize today? Highlight urgent customer/revenue risk, open commitments, and upcoming meetings. Give me the top actions in order.",
+                    "top_k": 10,
+                },
+                timeout=180,
+            )
+        if brief:
+            st.session_state["morning_brief"] = brief
+
+    if brief:
+        with st.container(border=True):
+            st.markdown("### ☀️ AI Morning Brief")
+            st.write(brief.get("answer", ""))
+            st.caption(
+                f"Confidence {percentage(brief.get('confidence', 0))} • "
+                f"{len(brief.get('evidence', []))} evidence items • "
+                f"{brief.get('retrieval_model', 'retrieval')}"
+            )
+
     total = len(emails)
 
     priority_count = sum(
