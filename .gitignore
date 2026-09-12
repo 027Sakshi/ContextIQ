@@ -1,0 +1,97 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# OAuth / credentials
+credentials/
+secrets/
+token.json
+**/token.json
+**/*token*.json
+
+# Keys / certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Service credentials
+service-account*.json
+*-service-account.json
+firebase-adminsdk*.json
+
+# Runtime Gmail/user data
+data/gmail/
+data/attachments/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# AI/model cache
+.cache/
+huggingface/
+models-cache/
+
+# Large model files
+*.onnx
+*.engine
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.weights
+
+# Build artifacts
+build/
+dist/
+tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# Generated handover metadata
+_PROJECT_CONTEXT.md
+_PROJECT_FILE_MANIFEST.txt
+_EXCLUDED_LARGE_FILES.txt
