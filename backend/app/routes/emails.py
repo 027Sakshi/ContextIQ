@@ -113,7 +113,13 @@ def import_gmail_emails(
         50
     )
 
-    service = get_gmail_service()
+    try:
+        service = get_gmail_service()
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
 
     message_ids = list_gmail_messages(
         service=service,

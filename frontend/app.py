@@ -15,10 +15,14 @@ if str(PROJECT_ROOT) not in sys.path:
 import requests
 import streamlit as st
 
+from frontend.theme import apply_app_theme
 from frontend.auth import (
     initialize_auth,
     show_login_page,
     logout_user,
+    google_oauth_configured,
+    google_workspace_connected,
+    create_google_authorization_url,
 )
 
 from backend.app.services.rag_service import run_rag
@@ -40,7 +44,7 @@ API_URL = os.getenv("CONTEXTIQ_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
 st.set_page_config(
     page_title="ContextIQ",
-    page_icon="📧",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -224,6 +228,16 @@ def title_case(value: Any) -> str:
 # API HELPERS
 # ==========================================================
 
+def _api_error(response) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("detail"):
+            return str(payload["detail"])
+    except Exception:
+        pass
+    return f"Request failed with status {response.status_code}."
+
+
 def api_get(
     path: str,
     timeout: int = 30,
@@ -234,16 +248,16 @@ def api_get(
             headers=api_headers(),
             timeout=timeout,
         )
-
-        response.raise_for_status()
-
+        if not response.ok:
+            message = _api_error(response)
+            if response.status_code in {401, 403, 409}:
+                st.warning(message)
+            else:
+                st.error(message)
+            return None
         return response.json()
-
     except requests.RequestException as error:
-        st.error(
-            f"Backend request failed: {error}"
-        )
-
+        st.error(f"ContextIQ backend is unavailable: {error}")
         return None
 
 
@@ -261,16 +275,16 @@ def api_post(
             headers=api_headers(),
             timeout=timeout,
         )
-
-        response.raise_for_status()
-
+        if not response.ok:
+            message = _api_error(response)
+            if response.status_code in {401, 403, 409}:
+                st.warning(message)
+            else:
+                st.error(message)
+            return None
         return response.json()
-
     except requests.RequestException as error:
-        st.error(
-            f"Backend request failed: {error}"
-        )
-
+        st.error(f"ContextIQ backend is unavailable: {error}")
         return None
 
 
@@ -405,139 +419,7 @@ for key, value in defaults.items():
 # GLOBAL STYLING
 # ==========================================================
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        max-width: 1500px;
-        padding-top: 1.15rem;
-        padding-bottom: 3rem;
-    }
-
-    .ctx-hero {
-        padding: 1.6rem 1.8rem;
-        border-radius: 22px;
-        border: 1px solid rgba(128,128,128,.22);
-        background:
-            linear-gradient(
-                135deg,
-                rgba(77,101,255,.17),
-                rgba(0,188,173,.10)
-            );
-        margin-bottom: 1rem;
-    }
-
-    .ctx-eyebrow {
-        font-size: .75rem;
-        font-weight: 800;
-        letter-spacing: .14em;
-        text-transform: uppercase;
-        opacity: .65;
-    }
-
-    .ctx-title {
-        font-size: 2.7rem;
-        font-weight: 900;
-        letter-spacing: -.045em;
-        margin: .2rem 0 .2rem;
-    }
-
-    .ctx-subtitle {
-        opacity: .72;
-        font-size: 1rem;
-        margin: 0;
-    }
-
-    .ctx-user {
-        display: inline-block;
-        margin-top: .8rem;
-        padding: .42rem .72rem;
-        border-radius: 999px;
-        background: rgba(128,128,128,.12);
-        font-size: .82rem;
-    }
-
-    .ctx-flow {
-        text-align: center;
-        padding: .7rem 1rem;
-        border: 1px solid rgba(128,128,128,.20);
-        border-radius: 14px;
-        margin-bottom: 1rem;
-        opacity: .82;
-        font-size: .84rem;
-    }
-
-    .ctx-card {
-        padding: 1rem 1.05rem;
-        border-radius: 16px;
-        border: 1px solid rgba(128,128,128,.22);
-        margin-bottom: .9rem;
-    }
-
-    .ctx-card-title {
-        font-size: 1.12rem;
-        font-weight: 800;
-        margin-bottom: .3rem;
-    }
-
-    .ctx-muted {
-        font-size: .84rem;
-        opacity: .67;
-    }
-
-    .ctx-mini {
-        border-radius: 14px;
-        border: 1px solid rgba(128,128,128,.18);
-        padding: .75rem .85rem;
-        min-height: 88px;
-    }
-
-    .ctx-mini-label {
-        font-size: .75rem;
-        opacity: .65;
-    }
-
-    .ctx-mini-value {
-        margin-top: .18rem;
-        font-size: 1.55rem;
-        font-weight: 800;
-    }
-
-    .ctx-status {
-        display: inline-block;
-        padding: .28rem .6rem;
-        border-radius: 999px;
-        font-size: .73rem;
-        font-weight: 800;
-        border: 1px solid rgba(128,128,128,.25);
-    }
-
-    .ctx-email-body {
-        border-left: 3px solid rgba(77,101,255,.48);
-        padding: .55rem .8rem;
-        margin: .45rem 0 .8rem;
-        background: rgba(128,128,128,.045);
-        border-radius: 0 10px 10px 0;
-        line-height: 1.62;
-        white-space: pre-wrap;
-    }
-
-    .ctx-date {
-        font-size: 1.18rem;
-        font-weight: 850;
-    }
-
-    section[data-testid="stSidebar"] {
-        border-right: 1px solid rgba(128,128,128,.18);
-    }
-
-    section[data-testid="stSidebar"] .stRadio label {
-        font-size: .93rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+apply_app_theme()
 
 
 # ==========================================================
@@ -578,183 +460,154 @@ if st.session_state.analysis:
 # SIDEBAR
 # ==========================================================
 
+google_connected = google_workspace_connected(current_user())
+
 with st.sidebar:
     st.markdown(
-        "## 📧 ContextIQ"
+        """
+        <div class="ctx-brand">
+            <span class="ctx-logo">CQ</span>
+            <div>
+                <div class="ctx-brand-title">ContextIQ</div>
+                <div class="ctx-brand-sub">Decision workspace</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.caption(
-        "Evidence-grounded business decisions from your inbox"
-    )
-
-    st.divider()
+    connection_label = "Google connected" if google_connected else "Google not connected"
+    connection_class = "" if google_connected else " off"
 
     st.markdown(
-        "**👤 Logged-in User**"
+        f"""
+        <div class="ctx-workspace">
+            <div class="ctx-workspace-name">{html.escape(current_user())}</div>
+            <div class="ctx-workspace-status">
+                <span class="ctx-dot{connection_class}"></span>
+                {connection_label}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-
-    st.caption(
-        current_user()
-    )
-
-    st.divider()
 
     nav_items = [
-        "🏠 Command Center",
-        "🧠 Ask ContextIQ",
-        "📥 Intelligent Inbox",
-        "✅ Action Center",
-        "🔥 Opportunity Radar",
-        "📅 Calendar",
-        "🗂️ CRM Intelligence",
-        "🛡️ Security Center",
-        "📎 Attachments",
+        "Command Center",
+        "Ask ContextIQ",
+        "Inbox",
+        "Actions",
+        "Opportunities",
+        "Calendar",
+        "CRM",
+        "Security",
+        "Documents",
     ]
 
     nav_values = {
-        "🏠 Command Center": "Dashboard",
-        "🧠 Ask ContextIQ": "Ask ContextIQ",
-        "📥 Intelligent Inbox": "Intelligent Inbox",
-        "✅ Action Center": "Action Center",
-        "🔥 Opportunity Radar": "Opportunity Radar",
-        "📅 Calendar": "Calendar",
-        "🗂️ CRM Intelligence": "CRM Intelligence",
-        "🛡️ Security Center": "Security Center",
-        "📎 Attachments": "Attachments",
+        "Command Center": "Dashboard",
+        "Ask ContextIQ": "Ask ContextIQ",
+        "Inbox": "Intelligent Inbox",
+        "Actions": "Action Center",
+        "Opportunities": "Opportunity Radar",
+        "Calendar": "Calendar",
+        "CRM": "CRM Intelligence",
+        "Security": "Security Center",
+        "Documents": "Attachments",
     }
 
     display_page = next(
-        (
-            key
-            for key, value in nav_values.items()
-            if value == st.session_state.page
-        ),
+        (key for key, value in nav_values.items() if value == st.session_state.page),
         nav_items[0],
     )
 
+    st.caption("Workspace")
     selected = st.radio(
         "Navigation",
         nav_items,
-        index=nav_items.index(
-            display_page
-        ),
+        index=nav_items.index(display_page),
+        label_visibility="collapsed",
     )
-
-    st.session_state.page = nav_values[
-        selected
-    ]
+    st.session_state.page = nav_values[selected]
 
     st.divider()
 
-    if st.button(
-        "🔄 Sync Gmail",
-        use_container_width=True,
-    ):
-        with st.spinner(
-            "Syncing Gmail..."
-        ):
-            result = sync_gmail()
-
-        if result:
-            imported = result.get(
-                "imported",
-                0,
+    if google_connected:
+        if st.button("Sync Gmail", use_container_width=True):
+            with st.spinner("Syncing Gmail..."):
+                result = sync_gmail()
+            if result:
+                imported = result.get("imported", 0)
+                skipped_value = result.get("skipped", [])
+                skipped = len(skipped_value) if isinstance(skipped_value, list) else skipped_value
+                st.toast(f"Imported {imported} · Skipped {skipped}")
+                st.session_state.analysis = None
+                st.rerun()
+    elif google_oauth_configured():
+        try:
+            st.link_button(
+                "Connect Google",
+                create_google_authorization_url(),
+                use_container_width=True,
+                type="primary",
             )
+        except Exception:
+            st.button("Connect Google", disabled=True, use_container_width=True)
+    else:
+        st.button("Sync Gmail", disabled=True, use_container_width=True)
+        st.caption("Configure Google OAuth to enable sync.")
 
-            skipped_value = result.get(
-                "skipped",
-                [],
-            )
+    side_a, side_b = st.columns(2)
+    with side_a:
+        if st.button("Analyze", use_container_width=True):
+            with st.spinner("Refreshing context..."):
+                result = analyze_emails()
+            if result:
+                st.session_state.analysis = result
+                st.rerun()
 
-            skipped = (
-                len(skipped_value)
-                if isinstance(
-                    skipped_value,
-                    list,
-                )
-                else skipped_value
-            )
-
-            st.success(
-                f"Imported {imported} • "
-                f"Skipped {skipped}"
-            )
-
-            st.session_state.analysis = None
-
+    with side_b:
+        if st.button("Refresh", use_container_width=True):
             st.rerun()
-
-    if st.button(
-        "🧠 Analyze Emails",
-        use_container_width=True,
-    ):
-        with st.spinner(
-            "Analyzing inbox..."
-        ):
-            result = analyze_emails()
-
-        if result:
-            st.session_state.analysis = (
-                result
-            )
-
-            st.success(
-                f"Analyzed "
-                f"{result.get('processed', 0)} "
-                "emails."
-            )
-
-            st.rerun()
-
-    if st.button(
-        "🔄 Refresh",
-        use_container_width=True,
-    ):
-        st.rerun()
 
     st.divider()
 
-    if st.button(
-        "🚪 Logout",
-        use_container_width=True,
-    ):
+    if st.button("Sign out", use_container_width=True):
         logout_user()
         st.rerun()
 
+# ==========================================================
+# PRODUCT BAR
+# ==========================================================
 
-# ==========================================================
-# HEADER
-# ==========================================================
+page_label = next(
+    (
+        label
+        for label, value in {
+            "Command Center": "Dashboard",
+            "Ask ContextIQ": "Ask ContextIQ",
+            "Inbox": "Intelligent Inbox",
+            "Actions": "Action Center",
+            "Opportunities": "Opportunity Radar",
+            "Calendar": "Calendar",
+            "CRM": "CRM Intelligence",
+            "Security": "Security Center",
+            "Documents": "Attachments",
+        }.items()
+        if value == st.session_state.page
+    ),
+    "Command Center",
+)
 
 st.markdown(
     f"""
-    <div class="ctx-hero">
-        <div class="ctx-eyebrow">
-            AI Business Email Intelligence
-        </div>
-        <div class="ctx-title">
-            ContextIQ
-        </div>
-        <p class="ctx-subtitle">
-            Evidence-grounded business decisions from your inbox
-        </p>
-        <div class="ctx-user">
-            👤 {current_user()}
-        </div>
+    <div class="ctx-topbar">
+        <div class="ctx-topbar-path">ContextIQ / {html.escape(page_label)}</div>
+        <div class="ctx-topbar-account">{html.escape(current_user())}</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
-st.markdown(
-    """
-    <div class="ctx-flow">
-        Inbox → Business Memory → Evidence → Reasoning → Human Approval → Action
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
 
 # ==========================================================
 # ACTION COUNTS
@@ -1335,8 +1188,8 @@ def render_email_card(
                     )
 
 
-        st.markdown("#### ✉️ Human-approved AI Reply")
-        st.caption("ContextIQ can prepare a grounded reply, but it will only create a Gmail draft after you explicitly approve it. It never sends automatically.")
+        st.markdown("#### Review & Draft Reply")
+        st.caption("Prepare a context-aware reply, review it, then create a Gmail draft only after approval. ContextIQ never sends automatically.")
 
         draft = st.session_state.reply_drafts.get(email_id)
         if st.button("Generate Reply Draft", key=f"reply_suggest_{email_id}", use_container_width=True):
@@ -1372,45 +1225,24 @@ def render_email_card(
 # ==========================================================
 
 def dashboard_page():
-    st.title("🏠 ContextIQ Command Center")
-    st.caption("A decision-first view of what needs attention, why it matters, and what ContextIQ can safely do next.")
-
-    brief = st.session_state.get("morning_brief")
-    if st.button("✨ Generate AI Morning Brief", use_container_width=True):
-        with st.spinner("Building an evidence-grounded operating brief..."):
-            brief = api_post(
-                "/assistant/ask",
-                json_body={
-                    "question": "What should I prioritize today? Highlight urgent customer/revenue risk, open commitments, and upcoming meetings. Give me the top actions in order.",
-                    "top_k": 10,
-                },
-                timeout=180,
-            )
-        if brief:
-            st.session_state["morning_brief"] = brief
-
-    if brief:
-        with st.container(border=True):
-            st.markdown("### ☀️ AI Morning Brief")
-            st.write(brief.get("answer", ""))
-            st.caption(
-                f"Confidence {percentage(brief.get('confidence', 0))} • "
-                f"{len(brief.get('evidence', []))} evidence items • "
-                f"{brief.get('retrieval_model', 'retrieval')}"
-            )
-
-    total = len(emails)
-
-    priority_count = sum(
-        (
-            e.get(
-                "priority_score"
-            )
-            or 0
-        ) >= 70
-        for e in emails
+    first_name = (
+        str(st.session_state.get("user_name", "")).strip().split(" ")[0]
+        or current_user().split("@")[0]
     )
 
+    st.markdown(
+        f"""
+        <div class="ctx-page-head">
+            <div>
+                <div class="ctx-page-title">Good to see you, {html.escape(first_name)}.</div>
+                <div class="ctx-page-sub">Here is the operating picture that needs your attention now.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    priority_count = sum((e.get("priority_score") or 0) >= 70 for e in emails)
     lead_count = sum(
         e.get("category") in {
             "sales",
@@ -1421,182 +1253,176 @@ def dashboard_page():
         }
         for e in emails
     )
-
-    threat_count = sum(
-        (
-            e.get(
-                "spam_score"
-            )
-            or 0
-        ) >= 0.70
-        for e in emails
-    )
-
-    impact_count = sum(
-        (
-            e.get(
-                "consequence_score"
-            )
-            or 0
-        ) >= 80
-        for e in emails
-    )
-
-    cols = st.columns(
-        8
-    )
+    impact_count = sum((e.get("consequence_score") or 0) >= 80 for e in emails)
 
     metrics = [
-        ("Total Emails", total),
-        ("High Priority", priority_count),
-        ("Business Leads", lead_count),
-        ("Threats", threat_count),
-        ("High Impact", impact_count),
-        ("Pending", len(pending_actions)),
-        ("Executed", len(executed_actions)),
+        ("Priority", priority_count),
+        ("High impact", impact_count),
         ("Commitments", len(open_commitments)),
+        ("Approvals", len(pending_actions)),
+        ("Opportunities", lead_count),
     ]
 
-    for col, (
-        label,
-        value,
-    ) in zip(
-        cols,
-        metrics,
-    ):
+    cols = st.columns(5)
+    for col, (label, value) in zip(cols, metrics):
         with col:
             st.markdown(
                 f"""
-                <div class="ctx-mini">
-                    <div class="ctx-mini-label">
-                        {label}
-                    </div>
-                    <div class="ctx-mini-value">
-                        {value}
-                    </div>
+                <div class="ctx-kpi">
+                    <div class="ctx-kpi-label">{html.escape(label)}</div>
+                    <div class="ctx-kpi-value">{value}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    st.divider()
-
-    st.markdown(
-        "### 🚨 Business Attention Queue"
-    )
+    st.markdown("<div style='height:.55rem'></div>", unsafe_allow_html=True)
 
     attention = []
-
     for email_item in emails:
-        result = analysis_results.get(
-            email_item.get("id"),
-            {},
-        )
-
-        consequence = result.get(
-            "consequence",
-            {},
-        ) or {}
-
+        result = analysis_results.get(email_item.get("id"), {})
+        consequence = result.get("consequence", {}) or {}
         impact = consequence.get(
             "score",
-            email_item.get(
-                "consequence_score"
+            email_item.get("consequence_score") or 0,
+        ) or 0
+
+        if impact >= 70 or (email_item.get("priority_score") or 0) >= 75:
+            attention.append((float(impact), email_item, result))
+
+    attention.sort(key=lambda item: item[0], reverse=True)
+
+    left, right = st.columns([1.62, 1], gap="medium")
+
+    with left:
+        st.markdown('<div class="ctx-panel-title">Priority queue</div>', unsafe_allow_html=True)
+
+        if not attention:
+            st.markdown(
+                '<div class="ctx-panel"><div class="ctx-empty">'
+                'Nothing urgent is competing for attention right now.'
+                '</div></div>',
+                unsafe_allow_html=True,
             )
-            or 0,
+        else:
+            rows = []
+            for impact, email_item, result in attention[:4]:
+                decision = result.get("decision", {}) or {}
+                action = title_case(decision.get("action_type"))
+                subject = html.escape(str(email_item.get("subject") or "Untitled"))
+                sender = html.escape(str(email_item.get("sender") or "Unknown sender"))
+                rows.append(
+                    f"""
+                    <div class="ctx-row">
+                        <div class="ctx-row-main">
+                            <div class="ctx-row-title">{subject}</div>
+                            <div class="ctx-row-sub">{sender} · {html.escape(action)}</div>
+                        </div>
+                        <div class="ctx-score">{impact:.0f}</div>
+                    </div>
+                    """
+                )
+
+            st.markdown(
+                '<div class="ctx-panel">' + "".join(rows) + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        if st.button("Open ranked inbox", use_container_width=True):
+            st.session_state.page = "Intelligent Inbox"
+            st.rerun()
+
+    with right:
+        top_r1, top_r2 = st.columns([1.5, 1])
+
+        with top_r1:
+            st.markdown('<div class="ctx-panel-title">Today</div>', unsafe_allow_html=True)
+
+        with top_r2:
+            generate_brief = st.button("Build brief", use_container_width=True)
+
+        if generate_brief:
+            with st.spinner("Building operating brief..."):
+                brief = api_post(
+                    "/assistant/ask",
+                    json_body={
+                        "question": (
+                            "What should I prioritize today? Focus on urgent customer or revenue risk, "
+                            "open commitments, approvals and upcoming meetings. Keep the answer concise."
+                        ),
+                        "top_k": 8,
+                    },
+                    timeout=180,
+                )
+            if brief:
+                st.session_state["morning_brief"] = brief
+
+        brief = st.session_state.get("morning_brief")
+        if brief:
+            answer = str(brief.get("answer", "")).strip()
+            if len(answer) > 520:
+                answer = answer[:517].rstrip() + "..."
+            st.markdown(
+                f'<div class="ctx-brief">{html.escape(answer)}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
+
+        commitment_rows = []
+        for item in open_commitments[:3]:
+            action = html.escape(str(item.get("action_text") or "Commitment"))
+            due = item.get("due_at")
+            due_label = due[:10] if isinstance(due, str) and due else "No due date"
+            commitment_rows.append(
+                f"""
+                <div class="ctx-row">
+                    <div class="ctx-row-main">
+                        <div class="ctx-row-title">{action}</div>
+                        <div class="ctx-row-sub">{html.escape(title_case(item.get("direction")))}</div>
+                    </div>
+                    <span class="ctx-pill">{html.escape(due_label)}</span>
+                </div>
+                """
+            )
+
+        if commitment_rows:
+            st.markdown(
+                '<div class="ctx-panel">'
+                '<div class="ctx-panel-title">Open commitments</div>'
+                + "".join(commitment_rows)
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="ctx-panel">'
+                '<div class="ctx-panel-title">Open commitments</div>'
+                '<div class="ctx-empty">No open commitments.</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<div style='height:.35rem'></div>", unsafe_allow_html=True)
+
+        st.markdown(
+            f"""
+            <div class="ctx-panel">
+                <div class="ctx-panel-title">Action control</div>
+                <div class="ctx-row">
+                    <div class="ctx-row-main">
+                        <div class="ctx-row-title">{len(pending_actions)} awaiting approval</div>
+                        <div class="ctx-row-sub">{len(executed_actions)} actions executed with human approval</div>
+                    </div>
+                    <span class="ctx-pill">Human-in-loop</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        if (
-            impact >= 80
-            or (
-                email_item.get(
-                    "priority_score"
-                )
-                or 0
-            ) >= 80
-        ):
-            attention.append(
-                (
-                    float(
-                        impact
-                        or 0
-                    ),
-                    email_item,
-                    result,
-                )
-            )
-
-    attention.sort(
-        key=lambda item: item[0],
-        reverse=True,
-    )
-
-    if not attention:
-        st.success(
-            "No high-impact emails currently require attention."
-        )
-    else:
-        for impact, email_item, result in attention[:5]:
-            decision = result.get(
-                "decision",
-                {},
-            ) or {}
-
-            with st.container(
-                border=True
-            ):
-                c1, c2, c3 = st.columns(
-                    [4, 1.4, 2]
-                )
-
-                with c1:
-                    st.markdown(
-                        f"### {email_item.get('subject', 'Untitled')}"
-                    )
-                    st.caption(
-                        email_item.get(
-                            "sender",
-                            "Unknown sender",
-                        )
-                    )
-
-                with c2:
-                    st.metric(
-                        "Impact",
-                        f"{impact:.0f}/100",
-                    )
-
-                with c3:
-                    st.write(
-                        "**Recommended Action**"
-                    )
-                    st.info(
-                        title_case(
-                            decision.get(
-                                "action_type"
-                            )
-                        )
-                    )
-
-
-    st.divider()
-    st.markdown("### 📌 Open Commitments")
-    if not open_commitments:
-        st.success("No open commitments detected.")
-    else:
-        for item in open_commitments[:6]:
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([5, 1.7, 1.2])
-                with c1:
-                    st.write(f"**{item.get('action_text', 'Commitment')}**")
-                    st.caption(title_case(item.get('direction')))
-                with c2:
-                    due = item.get('due_at')
-                    st.write(due[:10] if isinstance(due, str) and due else "No due date")
-                with c3:
-                    if st.button("Done", key=f"commitment_done_{item.get('id')}", use_container_width=True):
-                        if complete_commitment(item.get('id')):
-                            st.rerun()
+        if st.button("Review action queue", use_container_width=True):
+            st.session_state.page = "Action Center"
+            st.rerun()
 
 
 # ==========================================================
@@ -1605,7 +1431,7 @@ def dashboard_page():
 
 def inbox_page():
     st.title(
-        "📥 Intelligent Inbox"
+        "Intelligent Inbox"
     )
 
     st.caption(
@@ -1694,7 +1520,7 @@ def inbox_page():
 
 def action_center_page():
     st.title(
-        "✅ Action Center"
+        "Action Center"
     )
 
     st.caption(
@@ -1729,7 +1555,7 @@ def action_center_page():
 
     if not all_actions:
         st.success(
-            "No AI actions have been generated yet."
+            "No recommended actions have been generated yet."
         )
         return
 
@@ -1925,7 +1751,7 @@ def action_center_page():
 
 def opportunity_page():
     st.title(
-        "🔥 Opportunity Radar"
+        "Opportunity Radar"
     )
 
     st.caption(
@@ -2146,7 +1972,7 @@ def opportunity_page():
 
 def calendar_page():
     st.title(
-        "📅 Calendar Intelligence"
+        "Calendar"
     )
 
     st.caption(
@@ -2441,7 +2267,7 @@ def calendar_page():
 
 def crm_page():
     st.title(
-        "🗂️ CRM Intelligence"
+        "CRM Intelligence"
     )
 
     st.caption(
@@ -2772,7 +2598,7 @@ def crm_page():
 
 def security_page():
     st.title(
-        "🛡️ Security Center"
+        "Security Center"
     )
 
     st.caption(
@@ -3011,7 +2837,7 @@ def parse_business_information(
 
 def render_attachments():
     st.title(
-        "📎 Attachment Intelligence"
+        "Documents"
     )
 
     st.caption(
@@ -3281,7 +3107,7 @@ def render_attachments():
 # ==========================================================
 
 def ask_contextiq_page():
-    st.markdown("## 🧠 Ask ContextIQ")
+    st.markdown("## Ask ContextIQ")
     st.caption("Ask decision-oriented questions across your connected email, documents, CRM, opportunities, contacts, companies, and calendar. Answers are grounded in retrieved evidence.")
 
     suggestions = [
