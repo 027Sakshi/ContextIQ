@@ -343,6 +343,26 @@ def execute_action(
     )
 
 
+def get_commitments():
+    return api_get("/commitments/?status=open", timeout=30) or []
+
+
+def complete_commitment(commitment_id: int):
+    return api_post(f"/commitments/{commitment_id}/complete", timeout=30)
+
+
+def suggest_reply(email_id: int):
+    return api_post(f"/emails/{email_id}/reply/suggest", timeout=180)
+
+
+def create_reply_draft(email_id: int, subject: str, body: str):
+    return api_post(
+        f"/emails/{email_id}/reply/create",
+        json_body={"subject": subject, "body": body},
+        timeout=90,
+    )
+
+
 def get_calendar_events():
     return (
         api_get(
@@ -373,6 +393,7 @@ defaults = {
     "analysis": None,
     "page": "Dashboard",
     "business_insights": {},
+    "reply_drafts": {},
 }
 
 for key, value in defaults.items():
@@ -524,6 +545,7 @@ st.markdown(
 # ==========================================================
 
 emails = get_emails()
+open_commitments = get_commitments()
 
 if (
     st.session_state.analysis is None
@@ -1282,6 +1304,38 @@ def render_email_card(
                     )
 
 
+        st.markdown("#### ✉️ Human-approved AI Reply")
+        st.caption("ContextIQ can prepare a grounded reply, but it will only create a Gmail draft after you explicitly approve it. It never sends automatically.")
+
+        draft = st.session_state.reply_drafts.get(email_id)
+        if st.button("Generate Reply Draft", key=f"reply_suggest_{email_id}", use_container_width=True):
+            with st.spinner("Drafting from email + business evidence..."):
+                generated = suggest_reply(email_id)
+            if generated:
+                st.session_state.reply_drafts[email_id] = generated
+                st.rerun()
+
+        if draft:
+            draft_subject = st.text_input(
+                "Draft subject",
+                value=draft.get("subject", ""),
+                key=f"reply_subject_{email_id}",
+            )
+            draft_body = st.text_area(
+                "Draft body — review/edit before creating",
+                value=draft.get("body", ""),
+                height=220,
+                key=f"reply_body_{email_id}",
+            )
+            st.caption(f"Provider: {draft.get('provider', 'local')} · Confidence: {percentage(draft.get('confidence', 0))}")
+            if st.button("Approve & Create Gmail Draft", key=f"reply_create_{email_id}", type="primary", use_container_width=True):
+                with st.spinner("Creating draft in Gmail..."):
+                    created = create_reply_draft(email_id, draft_subject, draft_body)
+                if created:
+                    st.success(created.get("message", "Draft created in Gmail."))
+                    st.session_state.reply_drafts.pop(email_id, None)
+
+
 # ==========================================================
 # DASHBOARD
 # ==========================================================
@@ -1331,7 +1385,7 @@ def dashboard_page():
     )
 
     cols = st.columns(
-        7
+        8
     )
 
     metrics = [
@@ -1342,6 +1396,7 @@ def dashboard_page():
         ("High Impact", impact_count),
         ("Pending", len(pending_actions)),
         ("Executed", len(executed_actions)),
+        ("Commitments", len(open_commitments)),
     ]
 
     for col, (
@@ -1464,6 +1519,26 @@ def dashboard_page():
                             )
                         )
                     )
+
+
+    st.divider()
+    st.markdown("### 📌 Open Commitments")
+    if not open_commitments:
+        st.success("No open commitments detected.")
+    else:
+        for item in open_commitments[:6]:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([5, 1.7, 1.2])
+                with c1:
+                    st.write(f"**{item.get('action_text', 'Commitment')}**")
+                    st.caption(title_case(item.get('direction')))
+                with c2:
+                    due = item.get('due_at')
+                    st.write(due[:10] if isinstance(due, str) and due else "No due date")
+                with c3:
+                    if st.button("Done", key=f"commitment_done_{item.get('id')}", use_container_width=True):
+                        if complete_commitment(item.get('id')):
+                            st.rerun()
 
 
 # ==========================================================

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from fastapi import (
     APIRouter,
@@ -25,6 +26,10 @@ from backend.app.services.consequence_service import calculate_consequence
 from backend.app.services.dependency_service import detect_process_dependency
 from backend.app.services.attachment_service import analyze_attachment
 from backend.app.services.decision_service import decide_action
+from backend.app.services.commitment_service import sync_email_commitments
+from backend.app.services.gmail_action_service import create_gmail_draft
+from backend.app.services.knowledge_service import retrieve_business_knowledge
+from backend.app.services.llm_service import generate_reply_draft
 
 from backend.app.services.gmail_service import (
     get_gmail_service,
@@ -393,6 +398,44 @@ def import_gmail_emails(
 
         "error_details": errors
     }
+
+
+# ==========================================================
+# HUMAN-APPROVED AI REPLY DRAFT
+# ==========================================================
+
+class CreateDraftRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=20000)
+
+
+@router.post("/{email_id}/reply/suggest")
+def suggest_reply(email_id: int, db: Session = Depends(get_db)):
+    user = require_current_user()
+    email = db.query(Email).filter(Email.id == email_id, Email.user_email == user).first()
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    retrieval = retrieve_business_knowledge(
+        db, user, f"Reply to {email.subject}. Sender {email.sender}. {email.body[:1800]}", top_k=8
+    )
+    draft = generate_reply_draft(
+        {"id": email.id, "subject": email.subject, "sender": email.sender, "body": email.body},
+        retrieval["evidence"],
+    )
+    return {**draft, "evidence": retrieval["evidence"], "retrieval_model": retrieval["retrieval_model"]}
+
+
+@router.post("/{email_id}/reply/create")
+def create_reply_draft(email_id: int, payload: CreateDraftRequest, db: Session = Depends(get_db)):
+    user = require_current_user()
+    email = db.query(Email).filter(Email.id == email_id, Email.user_email == user).first()
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    try:
+        result = create_gmail_draft(email.sender, payload.subject, payload.body)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"success": True, "message": "Draft created in Gmail. Nothing was sent automatically.", **result}
 
 
 # ==========================================================
@@ -1139,6 +1182,12 @@ def analyze_all_emails(
             )
 
         # --------------------------------------------------
+        # COMMITMENT / OBLIGATION MEMORY
+        # --------------------------------------------------
+
+        commitment_records = sync_email_commitments(db, email)
+
+        # --------------------------------------------------
         # RESPONSE
         # --------------------------------------------------
 
@@ -1194,7 +1243,8 @@ def analyze_all_emails(
                 attachment_results
             ),
 
-            "decision": decision
+            "decision": decision,
+            "commitments_detected": len(commitment_records)
         })
 
     db.commit()

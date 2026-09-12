@@ -596,3 +596,67 @@ Rules:
             "used_evidence": [item["evidence_id"] for item in top],
             "recommended_next_steps": [],
         }
+
+# ==========================================================
+# HUMAN-APPROVED REPLY DRAFTS
+# ==========================================================
+
+def generate_reply_draft(email: dict, evidence: list[dict]) -> dict:
+    subject = str(email.get("subject") or "").strip()
+    sender = str(email.get("sender") or "").strip()
+    body = str(email.get("body") or "").strip()
+    evidence_text = "\n\n".join(
+        f"[{item['evidence_id']}] {item['source_type']}: {item['title']}\n{item['excerpt']}"
+        for item in evidence[:8]
+    )
+    fallback = {
+        "subject": subject if subject.lower().startswith("re:") else f"Re: {subject}",
+        "body": (
+            "Thanks for your email. I’ve reviewed your message and the related account context. "
+            "I’ll follow up with the appropriate next step shortly.\n\nBest regards"
+        ),
+        "provider": "local-fallback",
+        "confidence": 0.45,
+    }
+    client = _get_client()
+    if client is None:
+        return fallback
+
+    prompt = f"""
+Draft a professional reply to the email below using ONLY the supplied ContextIQ evidence.
+Do not promise anything that is not supported. Do not invent dates, prices, approvals, or commitments.
+The draft will be reviewed by a human before it is saved to Gmail.
+
+EMAIL FROM: {sender}
+SUBJECT: {subject}
+BODY: {body}
+
+EVIDENCE:
+{evidence_text or 'No additional evidence.'}
+
+Return ONLY JSON:
+{{"subject":"...","body":"...","confidence":0.0}}
+"""
+    try:
+        response = client.chat.completions.create(
+            model=GEMINI_MODEL,
+            messages=[
+                {"role": "system", "content": "Create cautious evidence-grounded business email drafts. JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=900,
+        )
+        parsed = _extract_json(response.choices[0].message.content if response.choices else "")
+        if not parsed:
+            return fallback
+        confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.75))))
+        return {
+            "subject": str(parsed.get("subject") or fallback["subject"]).strip(),
+            "body": str(parsed.get("body") or fallback["body"]).strip(),
+            "provider": "gemini",
+            "model": GEMINI_MODEL,
+            "confidence": confidence,
+        }
+    except Exception:
+        return fallback

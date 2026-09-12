@@ -12,6 +12,7 @@ from backend.app.models import (
     Action,
     Attachment,
     CalendarEvent,
+    Commitment,
     Company,
     Contact,
     CRMRecord,
@@ -20,6 +21,7 @@ from backend.app.models import (
 )
 from backend.app.routes.assistant import router as assistant_router
 from backend.app.routes.calendar import router as calendar_router
+from backend.app.routes.commitments import router as commitments_router
 from backend.app.routes.emails import router as email_router
 from backend.app.user_context import MissingUserContextError
 from backend.app.user_middleware import ContextIQUserMiddleware
@@ -35,13 +37,14 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="ContextIQ API",
     description="AI-powered business context and action intelligence",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(ContextIQUserMiddleware)
 app.include_router(assistant_router)
 app.include_router(calendar_router)
+app.include_router(commitments_router)
 app.include_router(email_router)
 
 

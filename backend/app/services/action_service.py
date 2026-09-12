@@ -11,6 +11,7 @@ from backend.app.models.crm_record import CRMRecord
 from backend.app.models.opportunity import Opportunity
 from backend.app.models.contact import Contact
 from backend.app.user_context import require_current_user
+from backend.app.services.calendar_google_service import create_calendar_event, find_available_slot, LOCAL_TZ
 
 
 # ==========================================================
@@ -152,9 +153,7 @@ def create_or_update_crm(
     user_email = require_current_user()
 
     if email.user_email != user_email:
-        raise ValueError(
-            "Email does not belong to the authenticated user."
-        )
+        raise ValueError("Email does not belong to the authenticated user.")
 
     sender_email = extract_email_address(
         email.sender
@@ -489,59 +488,49 @@ def execute_action(
     # ======================================================
 
     if action.action_type == "schedule_demo":
+        try:
+            slot = find_available_slot(duration_minutes=30, days_ahead=7)
+            if not slot:
+                return {"success": False, "message": "No available Google Calendar slot found in the next 7 days."}
 
-        now = datetime.now()
-
-        start_time = (
-            now + timedelta(days=1)
-        ).replace(
-            hour=15,
-            minute=0,
-            second=0,
-            microsecond=0
-        )
-
-        end_time = (
-            start_time
-            + timedelta(minutes=30)
-        )
-
-        calendar_event = CalendarEvent(
-            owner=user_email,
-            title=(
-                f"Demo - {email.subject}"
-            ),
-            event_date=start_time,
-            end_date=end_time,
-            attendees=email.sender,
-            status="scheduled"
-        )
-
-        db.add(
-            calendar_event
-        )
-
-        action.status = "executed"
-
-        db.commit()
-
-        return {
-            "success": True,
-            "action": action.action_type,
-            "message": (
-                "Demo scheduled successfully."
-            ),
-            "email_id": email.id,
-            "calendar_event_id": (
-                calendar_event.id
-            ),
-            "start": (
-                start_time.isoformat()
-            ),
-            "end": (
-                end_time.isoformat()
+            start_time = datetime.fromisoformat(f"{slot['date']}T{slot['start']}:00").replace(tzinfo=LOCAL_TZ)
+            end_time = datetime.fromisoformat(f"{slot['date']}T{slot['end']}:00").replace(tzinfo=LOCAL_TZ)
+            attendee = extract_email_address(email.sender)
+            created = create_calendar_event(
+                title=f"ContextIQ Demo - {email.subject}",
+                start_datetime=start_time,
+                end_datetime=end_time,
+                attendee_email=attendee if "@" in attendee else None,
             )
-        }
+
+            calendar_event = CalendarEvent(
+                owner=user_email,
+                title=f"ContextIQ Demo - {email.subject}",
+                event_date=start_time.replace(tzinfo=None),
+                end_date=end_time.replace(tzinfo=None),
+                attendees=attendee,
+                status="scheduled",
+                external_event_id=created.get("id"),
+                external_html_link=created.get("htmlLink"),
+            )
+            db.add(calendar_event)
+            action.status = "executed"
+            db.commit()
+            db.refresh(calendar_event)
+            return {
+                "success": True,
+                "action": action.action_type,
+                "message": "Google Calendar event created successfully.",
+                "email_id": email.id,
+                "calendar_event_id": calendar_event.id,
+                "google_event_id": created.get("id"),
+                "html_link": created.get("htmlLink"),
+                "start": start_time.isoformat(),
+                "end": end_time.isoformat(),
+            }
+        except Exception as error:
+            db.rollback()
+            return {"success": False, "message": "Google Calendar action failed.", "error": str(error)}
 
     # ======================================================
     # PARTNERSHIPS

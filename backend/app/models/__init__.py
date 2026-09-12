@@ -6,3 +6,4 @@ from backend.app.models.opportunity import Opportunity
 from backend.app.models.calendar_event import CalendarEvent
 from backend.app.models.attachment import Attachment
 from backend.app.models.action import Action
+from backend.app.models.commitment import Commitment

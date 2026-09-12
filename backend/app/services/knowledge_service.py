@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.app.models.attachment import Attachment
 from backend.app.models.calendar_event import CalendarEvent
 from backend.app.models.company import Company
+from backend.app.models.commitment import Commitment
 from backend.app.models.contact import Contact
 from backend.app.models.crm_record import CRMRecord
 from backend.app.models.email import Email
@@ -98,6 +99,18 @@ def build_business_documents(db: Session, user_email: str) -> list[dict]:
                 f"Attendees: {item.attendees or ''}\nStatus: {item.status}"
             ),
             "metadata": {"start": item.event_date.isoformat(), "end": item.end_date.isoformat(), "attendees": item.attendees},
+        })
+
+    for item in db.query(Commitment).filter(Commitment.user_email == user_email).all():
+        docs.append({
+            "source_type": "commitment",
+            "source_id": item.id,
+            "title": item.action_text[:120],
+            "text": (
+                f"Commitment: {item.action_text}\nDirection: {item.direction}\nStatus: {item.status}\n"
+                f"Due: {item.due_at or ''}\nSource: {item.source_excerpt or ''}"
+            ),
+            "metadata": {"status": item.status, "direction": item.direction, "due_at": item.due_at.isoformat() if item.due_at else None},
         })
 
     for item in db.query(Contact).filter(Contact.user_email == user_email).all():

@@ -43,3 +43,12 @@ class CalendarEvent(Base):
         String(50),
         default="scheduled"
     )
+    external_event_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True
+    )
+
+    external_html_link: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True
+    )
