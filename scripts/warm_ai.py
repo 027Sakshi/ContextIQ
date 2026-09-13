@@ -6,7 +6,13 @@ import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[1]
+
+# Load the project-local .env before inspecting runtime configuration.
+load_dotenv(ROOT / ".env")
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

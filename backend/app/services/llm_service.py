@@ -1,6 +1,9 @@
 import json
 import os
 from typing import Any
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from openai import OpenAI
 
@@ -8,6 +11,12 @@ from openai import OpenAI
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
+
+# Load ContextIQ's project-local environment before module-level LLM
+# configuration is evaluated. This makes the service independent of
+# import order and works consistently from Streamlit, Uvicorn and scripts.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(PROJECT_ROOT / ".env")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
