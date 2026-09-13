@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import atexit
@@ -52,6 +53,95 @@ def _bridge_streamlit_secrets() -> None:
 
 
 _bridge_streamlit_secrets()
+
+
+def _materialize_google_oauth_client() -> bool:
+    """
+    ContextIQ's Google OAuth flow historically reads
+    credentials/google_oauth_client.json.
+
+    On Streamlit Cloud that ignored local file does not exist, so create
+    an ephemeral copy at runtime from Streamlit Secrets/environment vars.
+    Nothing is committed to Git.
+    """
+    client_id = os.getenv(
+        "GOOGLE_CLIENT_ID",
+        "",
+    ).strip()
+
+    client_secret = os.getenv(
+        "GOOGLE_CLIENT_SECRET",
+        "",
+    ).strip()
+
+    redirect_uri = os.getenv(
+        "GOOGLE_OAUTH_REDIRECT_URI",
+        "",
+    ).strip()
+
+    if not client_id or not client_secret:
+        print(
+            "[ContextIQ] Google OAuth client ID/secret "
+            "are not configured."
+        )
+        return False
+
+    if not redirect_uri:
+        redirect_uri = "http://localhost:8501"
+
+    credentials_dir = ROOT / "credentials"
+    credentials_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    client_file = (
+        credentials_dir
+        / "google_oauth_client.json"
+    )
+
+    config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": (
+                "https://accounts.google.com/o/oauth2/auth"
+            ),
+            "token_uri": (
+                "https://oauth2.googleapis.com/token"
+            ),
+            "redirect_uris": [
+                redirect_uri,
+            ],
+        }
+    }
+
+    client_file.write_text(
+        json.dumps(
+            config,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        client_file.chmod(0o600)
+    except Exception:
+        pass
+
+    print(
+        "[ContextIQ] Google OAuth client loaded "
+        "from deployment secrets."
+    )
+    print(
+        "[ContextIQ] OAuth redirect:",
+        redirect_uri,
+    )
+
+    return True
+
+
+_materialize_google_oauth_client()
 
 os.environ.setdefault("CONTEXTIQ_API_URL", "http://127.0.0.1:8000")
 os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
