@@ -217,7 +217,6 @@ def create_google_authorization_url() -> str:
 
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         prompt="consent select_account",
     )
 
@@ -250,8 +249,64 @@ def handle_google_oauth_callback() -> bool:
             autogenerate_code_verifier=False,
         )
         flow.redirect_uri = settings.google_oauth_redirect_uri
-        flow.fetch_token(code=code)
+        # Google may legitimately return a superset of the requested
+        # scopes when the account has granted this app broader access in
+        # the past. oauthlib otherwise rejects that valid token response
+        # with "Scope has changed".
+        previous_relax_scope = os.environ.get(
+            "OAUTHLIB_RELAX_TOKEN_SCOPE"
+        )
+
+        os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+        try:
+            flow.fetch_token(code=code)
+        finally:
+            if previous_relax_scope is None:
+                os.environ.pop(
+                    "OAUTHLIB_RELAX_TOKEN_SCOPE",
+                    None,
+                )
+            else:
+                os.environ[
+                    "OAUTHLIB_RELAX_TOKEN_SCOPE"
+                ] = previous_relax_scope
+
         credentials = flow.credentials
+
+        # We relax only exact equality. We still enforce that every
+        # permission ContextIQ actually needs was granted.
+        granted_scopes = set(
+            getattr(
+                credentials,
+                "granted_scopes",
+                None,
+            )
+            or getattr(
+                credentials,
+                "scopes",
+                None,
+            )
+            or []
+        )
+
+        required_scopes = set(
+            GOOGLE_OAUTH_SCOPES
+        )
+
+        missing_scopes = (
+            required_scopes
+            - granted_scopes
+        )
+
+        if missing_scopes:
+            raise RuntimeError(
+                "Google did not grant all required "
+                "ContextIQ permissions: "
+                + ", ".join(
+                    sorted(missing_scopes)
+                )
+            )
 
         client_config = _load_google_client_config()["web"]
         token_info = id_token.verify_oauth2_token(
