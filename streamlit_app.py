@@ -22,6 +22,8 @@ SUPPORTED_SECRET_KEYS = (
     "CONTEXTIQ_SESSION_SECRET",
     "DATABASE_URL",
     "ALLOW_DEV_EMAIL_LOGIN",
+    "ALLOW_DIRECT_EMAIL_LOGIN",
+    "CONTEXTIQ_DIRECT_LOGIN_CODE",
     "HF_TOKEN",
 )
 
@@ -52,6 +54,7 @@ os.environ.setdefault("CONTEXTIQ_API_URL", "http://127.0.0.1:8000")
 os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
 os.environ.setdefault("GEMINI_THINKING_LEVEL", "low")
 os.environ.setdefault("ALLOW_DEV_EMAIL_LOGIN", "false")
+os.environ.setdefault("ALLOW_DIRECT_EMAIL_LOGIN", "true")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 (ROOT / "data").mkdir(parents=True, exist_ok=True)

@@ -53,3 +53,20 @@ Google token files are local to the running deployment, so a restart can require
 a fresh Google sign-in and Gmail sync. For the hackathon demo, sign in and sync
 before judging. A long-lived production deployment should use persistent managed
 storage for database/token state.
+
+## Two supported sign-in paths
+
+ContextIQ intentionally supports both:
+
+1. **Continue with Google** — creates the ContextIQ session and connects Gmail/Calendar in one flow.
+2. **Continue with email** — opens the same ContextIQ workspace directly. If the same email already has a stored Google token, Workspace features are available immediately; otherwise use **Connect Google** inside the app before Gmail/Calendar actions.
+
+Cloud secrets:
+
+```toml
+ALLOW_DIRECT_EMAIL_LOGIN = "true"
+# Recommended for an internet deployment. Leave empty only for a controlled private demo.
+CONTEXTIQ_DIRECT_LOGIN_CODE = "YOUR-PRIVATE-WORKSPACE-CODE"
+```
+
+Direct sign-in does not fake Google authorization. Google-dependent actions always require a real OAuth token.

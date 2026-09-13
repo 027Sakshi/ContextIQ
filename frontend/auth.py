@@ -1,3 +1,5 @@
+
+import hmac
 import json
 import os
 import re
@@ -313,5 +315,73 @@ def show_login_page() -> bool:
                             st.error("Enter a valid email address.")
 
             st.toggle("Light mode", key="ctx_light_mode")
+
+    # Production fallback: direct ContextIQ workspace sign-in.
+    # This creates the same ContextIQ session as Google sign-in, while Google
+    # Workspace APIs still require a real OAuth connection for that email.
+    direct_login_enabled = (
+        os.getenv("ALLOW_DIRECT_EMAIL_LOGIN", "true").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    if direct_login_enabled:
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:12px;margin:12px 0;color:#8b93a7;font-size:12px;">'
+            '<span style="height:1px;background:rgba(128,128,128,.22);flex:1"></span>'
+            '<span>or</span>'
+            '<span style="height:1px;background:rgba(128,128,128,.22);flex:1"></span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        with st.form("contextiq_direct_login_form", clear_on_submit=False):
+            direct_email = st.text_input(
+                "Work email",
+                placeholder="you@company.com",
+                key="contextiq_direct_email",
+            )
+            required_code = os.getenv("CONTEXTIQ_DIRECT_LOGIN_CODE", "").strip()
+            direct_code = ""
+            if required_code:
+                direct_code = st.text_input(
+                    "Workspace access code",
+                    type="password",
+                    key="contextiq_direct_access_code",
+                )
+            direct_submit = st.form_submit_button(
+                "Continue with email",
+                use_container_width=True,
+            )
+
+        if direct_submit:
+            normalized_email = direct_email.strip().lower()
+            valid_email = (
+                "@" in normalized_email
+                and "." in normalized_email.rsplit("@", 1)[-1]
+            )
+            if not valid_email:
+                st.error("Enter a valid work email.")
+            elif required_code and not hmac.compare_digest(
+                direct_code.strip(),
+                required_code,
+            ):
+                st.error("Invalid workspace access code.")
+            else:
+                st.session_state["user_email"] = normalized_email
+                st.session_state["user_name"] = (
+                    normalized_email.split("@", 1)[0]
+                    .replace(".", " ")
+                    .replace("_", " ")
+                    .replace("-", " ")
+                    .title()
+                )
+                st.session_state["contextiq_session_token"] = (
+                    create_session_token(normalized_email)
+                )
+                st.session_state["authenticated"] = True
+                st.session_state["logged_in"] = True
+                st.session_state["auth_source"] = "direct"
+                st.session_state["google_authenticated"] = False
+                st.rerun()
 
     return False
