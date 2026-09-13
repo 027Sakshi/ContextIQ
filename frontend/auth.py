@@ -1,4 +1,7 @@
 
+import secrets
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
 import hmac
 import json
 import os
@@ -138,18 +141,85 @@ def google_workspace_connected(user_email: str | None = None) -> bool:
         return False
 
 
+
+GOOGLE_OAUTH_STATE_SALT = "contextiq-google-oauth-state-v1"
+GOOGLE_OAUTH_STATE_TTL_SECONDS = 900
+
+
+def _google_oauth_state_serializer() -> URLSafeTimedSerializer:
+    secret = os.getenv(
+        "CONTEXTIQ_SESSION_SECRET",
+        "",
+    ).strip()
+
+    if not secret:
+        raise RuntimeError(
+            "CONTEXTIQ_SESSION_SECRET is required "
+            "for Google OAuth."
+        )
+
+    return URLSafeTimedSerializer(
+        secret_key=secret,
+        salt=GOOGLE_OAUTH_STATE_SALT,
+    )
+
+
+def _create_google_oauth_state() -> str:
+    """
+    Create a signed state value that survives the external Google
+    redirect without depending on Streamlit session_state.
+    """
+    return _google_oauth_state_serializer().dumps(
+        {
+            "nonce": secrets.token_urlsafe(24),
+            "provider": "google",
+        }
+    )
+
+
+def _validate_google_oauth_state(
+    state: str,
+) -> bool:
+    if not state:
+        return False
+
+    try:
+        payload = _google_oauth_state_serializer().loads(
+            state,
+            max_age=GOOGLE_OAUTH_STATE_TTL_SECONDS,
+        )
+    except (
+        BadSignature,
+        SignatureExpired,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+    return (
+        isinstance(payload, dict)
+        and payload.get("provider") == "google"
+        and bool(payload.get("nonce"))
+    )
+
+
 def create_google_authorization_url() -> str:
+    state = _create_google_oauth_state()
+
     flow = Flow.from_client_config(
         _load_google_client_config(),
         scopes=GOOGLE_OAUTH_SCOPES,
+        state=state,
     )
+
     flow.redirect_uri = settings.google_oauth_redirect_uri
-    authorization_url, state = flow.authorization_url(
+
+    authorization_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent select_account",
     )
-    st.session_state.google_oauth_state = state
+
     return authorization_url
 
 
@@ -160,9 +230,15 @@ def handle_google_oauth_callback() -> bool:
     if not code:
         return False
 
-    expected_state = st.session_state.get("google_oauth_state", "")
-    if not expected_state or returned_state != expected_state:
-        st.error("Google sign-in validation failed. Start the Google sign-in again.")
+    expected_state = str(returned_state or "")
+
+    if not _validate_google_oauth_state(
+        expected_state
+    ):
+        st.error(
+            "Google sign-in validation failed. "
+            "Start the Google sign-in again."
+        )
         return False
 
     try:
