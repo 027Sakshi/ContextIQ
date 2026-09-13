@@ -96,3 +96,4 @@ desktop.ini
 _PROJECT_CONTEXT.md
 _PROJECT_FILE_MANIFEST.txt
 _EXCLUDED_LARGE_FILES.txt
+.streamlit/secrets.toml
