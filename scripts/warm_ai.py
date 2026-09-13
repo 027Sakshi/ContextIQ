@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Load the project-local .env before inspecting runtime configuration.
 load_dotenv(ROOT / ".env")
 
 if str(ROOT) not in sys.path:
@@ -33,12 +32,13 @@ for package in [
     "torch",
     "transformers",
     "scikit-learn",
-    "openai",
+    "google-genai",
 ]:
     print(f"{package:24} {package_version(package)}")
 
 print(f"{'Gemini key configured':24} {'yes' if os.getenv('GEMINI_API_KEY', '').strip() else 'no'}")
 print(f"{'Gemini model':24} {os.getenv('GEMINI_MODEL', 'gemini-3.8-flash')}")
+print(f"{'Thinking level':24} {os.getenv('GEMINI_THINKING_LEVEL', 'low')}")
 
 print("\nWarming local semantic model...")
 started = time.perf_counter()

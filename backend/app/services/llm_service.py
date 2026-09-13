@@ -5,16 +5,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from openai import OpenAI
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
 
 
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
 
-# Load ContextIQ's project-local environment before module-level LLM
-# configuration is evaluated. This makes the service independent of
-# import order and works consistently from Streamlit, Uvicorn and scripts.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -25,38 +24,31 @@ GEMINI_MODEL = os.getenv(
     "gemini-3.8-flash",
 ).strip()
 
-GEMINI_BASE_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/openai/"
-)
-
 GEMINI_TIMEOUT_SECONDS = float(
     os.getenv("GEMINI_TIMEOUT_SECONDS", "18")
 )
 
-GEMINI_MAX_RETRIES = int(
-    os.getenv("GEMINI_MAX_RETRIES", "0")
+GEMINI_THINKING_LEVEL = (
+    os.getenv("GEMINI_THINKING_LEVEL", "low").strip().lower() or "low"
 )
+if GEMINI_THINKING_LEVEL not in {"low", "medium", "high"}:
+    GEMINI_THINKING_LEVEL = "low"
 
 
 # ==========================================================
 # CLIENT
 # ==========================================================
 
-def _get_client() -> OpenAI | None:
-    """
-    Create an OpenAI-compatible client that sends requests
-    to Google's Gemini API.
-
-    The Gemini API key is read from GEMINI_API_KEY.
-    """
+def _get_client() -> genai.Client | None:
+    """Create the native Google GenAI client for Gemini Developer API."""
     if not GEMINI_API_KEY:
         return None
 
-    return OpenAI(
+    return genai.Client(
         api_key=GEMINI_API_KEY,
-        base_url=GEMINI_BASE_URL,
-        timeout=GEMINI_TIMEOUT_SECONDS,
-        max_retries=GEMINI_MAX_RETRIES,
+        http_options=types.HttpOptions(
+            timeout=max(1, int(GEMINI_TIMEOUT_SECONDS * 1000)),
+        ),
     )
 
 
@@ -131,6 +123,60 @@ def _extract_json(text: str) -> dict:
             pass
 
     return {}
+
+
+class BusinessInsightOutput(BaseModel):
+    business_meaning: str = ""
+    historical_context: str = ""
+    business_impact: str = ""
+    recommended_action: str = ""
+    confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+    message: str = ""
+
+
+class BusinessAnswerOutput(BaseModel):
+    answer: str = ""
+    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    used_evidence: list[str] = []
+    recommended_next_steps: list[str] = []
+
+
+class ReplyDraftOutput(BaseModel):
+    subject: str = ""
+    body: str = ""
+    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+
+
+def _gemini_structured(
+    client: genai.Client,
+    *,
+    prompt: str,
+    system_instruction: str,
+    response_model: type[BaseModel],
+    max_output_tokens: int,
+) -> dict:
+    """Call Gemini's native Interactions API with schema-validated JSON output."""
+    interaction = client.interactions.create(
+        model=GEMINI_MODEL,
+        input=prompt,
+        system_instruction=system_instruction,
+        generation_config={
+            "thinking_level": GEMINI_THINKING_LEVEL,
+            "max_output_tokens": max_output_tokens,
+        },
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": response_model.model_json_schema(),
+        },
+        # ContextIQ requests are standalone and should not create server-side
+        # conversation state by default.
+        store=False,
+    )
+    text = str(getattr(interaction, "output_text", "") or "").strip()
+    if not text:
+        raise ValueError("Gemini returned no text output")
+    return response_model.model_validate_json(text).model_dump()
 
 
 def _fallback_insight(
@@ -280,7 +326,7 @@ def generate_business_insight(
 ) -> dict:
     """
     Generate ContextIQ's higher-level business insight using
-    Gemini through Google's OpenAI-compatible endpoint.
+    Gemini through Google's native GenAI SDK.
 
     Expected inputs:
         email        -> current email
@@ -386,57 +432,18 @@ Rules:
 """
 
     try:
-        response = client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a careful business intelligence "
-                        "assistant. Output valid JSON only."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=0.2,
-            max_tokens=650,
-        )
-
-        content = (
-            response.choices[0].message.content
-            if response.choices
-            else ""
-        )
-
-        parsed = _extract_json(
-            content
+        parsed = _gemini_structured(
+            client,
+            prompt=prompt,
+            system_instruction=(
+                "You are a careful business intelligence assistant. "
+                "Use only supplied context and never invent unsupported facts."
+            ),
+            response_model=BusinessInsightOutput,
+            max_output_tokens=1200,
         )
 
         if not parsed:
-            # Gemini may occasionally return plain text.
-            # Keep that response rather than losing the insight.
-            plain_text = (
-                str(content).strip()
-                if content
-                else ""
-            )
-
-            if plain_text:
-                return {
-                    "provider": "gemini",
-                    "model": GEMINI_MODEL,
-                    "message": plain_text,
-                    "business_meaning": plain_text,
-                    "historical_context": "",
-                    "business_impact": "",
-                    "recommended_action": "",
-                    "confidence": 0.85,
-                    "retrieved_count": 0,
-                }
-
             return fallback
 
         confidence = parsed.get(
@@ -581,17 +588,16 @@ Rules:
 """
 
     try:
-        response = client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=[
-                {"role": "system", "content": "Answer only from supplied business evidence. Output valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=750,
+        parsed = _gemini_structured(
+            client,
+            prompt=prompt,
+            system_instruction=(
+                "Answer only from supplied business evidence. "
+                "Cite evidence IDs for factual claims and never invent facts."
+            ),
+            response_model=BusinessAnswerOutput,
+            max_output_tokens=1200,
         )
-        content = response.choices[0].message.content if response.choices else ""
-        parsed = _extract_json(content)
         if not parsed:
             raise ValueError("Model did not return structured JSON")
         used = [str(item) for item in (parsed.get("used_evidence") or [])]
@@ -657,16 +663,16 @@ Return ONLY JSON:
 {{"subject":"...","body":"...","confidence":0.0}}
 """
     try:
-        response = client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=[
-                {"role": "system", "content": "Create cautious evidence-grounded business email drafts. JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=900,
+        parsed = _gemini_structured(
+            client,
+            prompt=prompt,
+            system_instruction=(
+                "Create cautious, evidence-grounded business email drafts. "
+                "Never invent commitments, approvals, dates or prices."
+            ),
+            response_model=ReplyDraftOutput,
+            max_output_tokens=1400,
         )
-        parsed = _extract_json(response.choices[0].message.content if response.choices else "")
         if not parsed:
             return fallback
         confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.75))))
