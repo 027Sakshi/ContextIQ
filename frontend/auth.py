@@ -210,6 +210,7 @@ def create_google_authorization_url() -> str:
         _load_google_client_config(),
         scopes=GOOGLE_OAUTH_SCOPES,
         state=state,
+        autogenerate_code_verifier=False,
     )
 
     flow.redirect_uri = settings.google_oauth_redirect_uri
@@ -246,6 +247,7 @@ def handle_google_oauth_callback() -> bool:
             _load_google_client_config(),
             scopes=GOOGLE_OAUTH_SCOPES,
             state=expected_state,
+            autogenerate_code_verifier=False,
         )
         flow.redirect_uri = settings.google_oauth_redirect_uri
         flow.fetch_token(code=code)
