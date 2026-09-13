@@ -43,6 +43,7 @@ def initialize_auth():
         "contextiq_session_token": "",
         "google_oauth_state": "",
         "google_profile": {},
+        "ctx_light_mode": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -214,7 +215,7 @@ def show_login_page() -> bool:
     if st.session_state.logged_in:
         return True
 
-    apply_login_theme()
+    apply_login_theme("light" if st.session_state.get("ctx_light_mode") else "dark")
 
     left, right = st.columns([1.18, .82], gap="large")
 
@@ -310,5 +311,7 @@ def show_login_page() -> bool:
                             st.rerun()
                         else:
                             st.error("Enter a valid email address.")
+
+            st.toggle("Light mode", key="ctx_light_mode")
 
     return False

@@ -16,7 +16,14 @@ def build_email_text(email: dict) -> str:
 
 def retrieve_related_emails(current_email: dict, all_emails: list[dict], top_k: int = 3) -> list[dict]:
     current_id = current_email.get("id")
-    candidates = [e for e in all_emails if e.get("id") != current_id]
+
+    # Never score the query email against itself. Besides being semantically
+    # cleaner, this guarantees one retrieval score per candidate document.
+    candidates = [
+        item
+        for item in all_emails
+        if item.get("id") != current_id
+    ]
     if not candidates:
         return []
 
@@ -24,18 +31,33 @@ def retrieve_related_emails(current_email: dict, all_emails: list[dict], top_k: 
         build_email_text(current_email),
         [build_email_text(item) for item in candidates],
     )
-    ranked = sorted(range(len(candidates)), key=lambda i: float(scores[i]), reverse=True)
+
+    if len(scores) != len(candidates):
+        raise RuntimeError(
+            "Hybrid retrieval returned an unexpected number of scores: "
+            f"{len(scores)} for {len(candidates)} candidates."
+        )
+
+    ranked = sorted(
+        range(len(candidates)),
+        key=lambda i: float(scores[i]),
+        reverse=True,
+    )
+
     results = []
     for index in ranked:
         score = float(scores[index])
         if score <= 0:
             continue
+
         item = dict(candidates[index])
         item["similarity_score"] = round(score, 4)
         item["retrieval_model"] = model_name
         results.append(item)
+
         if len(results) >= top_k:
             break
+
     return results
 
 

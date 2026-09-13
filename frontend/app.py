@@ -4,6 +4,7 @@ import sys
 import json
 import re
 import html
+import time
 from datetime import datetime
 from typing import Any
 
@@ -24,12 +25,6 @@ from frontend.auth import (
     google_workspace_connected,
     create_google_authorization_url,
 )
-
-from backend.app.services.rag_service import run_rag
-from backend.app.services.llm_service import (
-    generate_business_insight,
-)
-
 
 # ==========================================================
 # CONFIGURATION
@@ -81,6 +76,12 @@ def api_headers() -> dict:
     # Explicit local-dev fallback only. Production never trusts this header.
     user = current_user()
     return {"X-ContextIQ-User": user} if user else {}
+
+
+def render_html_fragment(value: str) -> None:
+    """Render app-owned HTML without Markdown treating indentation as code."""
+    fragment = re.sub(r">\s+<", "><", str(value).strip())
+    st.markdown(fragment, unsafe_allow_html=True)
 
 
 # ==========================================================
@@ -365,8 +366,16 @@ def complete_commitment(commitment_id: int):
     return api_post(f"/commitments/{commitment_id}/complete", timeout=30)
 
 
+def generate_email_insight(email_id: int, analysis: dict):
+    return api_post(
+        f"/emails/{email_id}/insight",
+        json_body={"analysis": analysis},
+        timeout=35,
+    )
+
+
 def suggest_reply(email_id: int):
-    return api_post(f"/emails/{email_id}/reply/suggest", timeout=180)
+    return api_post(f"/emails/{email_id}/reply/suggest", timeout=60)
 
 
 def create_reply_draft(email_id: int, subject: str, body: str):
@@ -408,6 +417,8 @@ defaults = {
     "page": "Dashboard",
     "business_insights": {},
     "reply_drafts": {},
+    "selected_email_id": None,
+    "ctx_light_mode": False,
 }
 
 for key, value in defaults.items():
@@ -419,7 +430,7 @@ for key, value in defaults.items():
 # GLOBAL STYLING
 # ==========================================================
 
-apply_app_theme()
+apply_app_theme("light" if st.session_state.get("ctx_light_mode") else "dark")
 
 
 # ==========================================================
@@ -463,33 +474,21 @@ if st.session_state.analysis:
 google_connected = google_workspace_connected(current_user())
 
 with st.sidebar:
-    st.markdown(
-        """
-        <div class="ctx-brand">
-            <span class="ctx-logo">CQ</span>
-            <div>
-                <div class="ctx-brand-title">ContextIQ</div>
-                <div class="ctx-brand-sub">Decision workspace</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_html_fragment(
+        '<div class="ctx-brand"><span class="ctx-logo">CQ</span><div>'
+        '<div class="ctx-brand-title">ContextIQ</div>'
+        '<div class="ctx-brand-sub">Decision workspace</div></div></div>'
     )
 
     connection_label = "Google connected" if google_connected else "Google not connected"
     connection_class = "" if google_connected else " off"
 
-    st.markdown(
-        f"""
-        <div class="ctx-workspace">
-            <div class="ctx-workspace-name">{html.escape(current_user())}</div>
-            <div class="ctx-workspace-status">
-                <span class="ctx-dot{connection_class}"></span>
-                {connection_label}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_html_fragment(
+        '<div class="ctx-workspace">'
+        f'<div class="ctx-workspace-name">{html.escape(current_user())}</div>'
+        '<div class="ctx-workspace-status">'
+        f'<span class="ctx-dot{connection_class}"></span>{connection_label}'
+        '</div></div>'
     )
 
     nav_items = [
@@ -533,8 +532,8 @@ with st.sidebar:
     st.divider()
 
     if google_connected:
-        if st.button("Sync Gmail", use_container_width=True):
-            with st.spinner("Syncing Gmail..."):
+        if st.button("Sync Gmail", use_container_width=True, type="primary"):
+            with st.spinner("Syncing Gmail…"):
                 result = sync_gmail()
             if result:
                 imported = result.get("imported", 0)
@@ -560,7 +559,7 @@ with st.sidebar:
     side_a, side_b = st.columns(2)
     with side_a:
         if st.button("Analyze", use_container_width=True):
-            with st.spinner("Refreshing context..."):
+            with st.spinner("Refreshing context…"):
                 result = analyze_emails()
             if result:
                 st.session_state.analysis = result
@@ -571,10 +570,14 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+    st.caption("Appearance")
+    st.toggle("Light mode", key="ctx_light_mode")
 
+    st.divider()
     if st.button("Sign out", use_container_width=True):
         logout_user()
         st.rerun()
+
 
 # ==========================================================
 # PRODUCT BAR
@@ -646,578 +649,326 @@ rejected_actions = [
 ]
 
 
+def page_header(title: str, subtitle: str = "") -> None:
+    render_html_fragment(
+        f'<div class="ctx-page-head"><div>'
+        f'<div class="ctx-page-title">{html.escape(title)}</div>'
+        f'<div class="ctx-page-sub">{html.escape(subtitle)}</div>'
+        f'</div></div>'
+    )
+
+
 def _graph_label(value: Any) -> str:
-    return str(value or "Unknown").replace('"', "'")[:80]
+    return str(value or "Unknown").strip()[:90]
 
 
-def context_graph_dot(email_item: dict, result: dict) -> str:
+def render_context_relationship_map(email_item: dict, result: dict) -> None:
     context = result.get("business_context", {}) or {}
     contact = context.get("contact") or {}
     company = context.get("company") or {}
     crm = context.get("crm") or {}
     opportunity = context.get("opportunity") or {}
-    lines = [
-        'digraph ContextIQ {',
-        'rankdir=LR;',
-        'graph [bgcolor="transparent", pad="0.2"];',
-        'node [shape=box, style="rounded", fontname="Arial"];',
-        f'email [label="Email\n{_graph_label(email_item.get("subject"))}"];',
-        f'contact [label="Contact\n{_graph_label(contact.get("name") or email_item.get("sender"))}"];',
-        f'company [label="Company\n{_graph_label(company.get("name") or contact.get("company") or "Unlinked")}"];',
-        f'crm [label="CRM\n{_graph_label(crm.get("stage") or crm.get("status") or "No record")}"];',
-        f'opp [label="Opportunity\n{_graph_label(opportunity.get("title") or "No active link")}"];',
-        'email -> contact;',
-        'contact -> company;',
-        'company -> crm;',
-        'company -> opp;',
-        '}',
+
+    nodes = [
+        ("Email", email_item.get("subject") or "Untitled"),
+        ("Contact", contact.get("name") or email_item.get("sender") or "Unknown"),
+        ("Company", company.get("name") or contact.get("company") or "Unlinked"),
+        (
+            "Account",
+            crm.get("stage")
+            or crm.get("status")
+            or opportunity.get("stage")
+            or "No CRM stage",
+        ),
     ]
-    return "\n".join(lines)
 
+    pieces = []
+    for index, (label, value) in enumerate(nodes):
+        pieces.append(
+            '<div class="ctx-map-node">'
+            f'<strong>{html.escape(_graph_label(label))}</strong>'
+            f'<span>{html.escape(_graph_label(value))}</span>'
+            '</div>'
+        )
+        if index < len(nodes) - 1:
+            pieces.append('<div class="ctx-map-arrow">→</div>')
 
-# ==========================================================
-# SHARED EMAIL INTELLIGENCE CARD
-# ==========================================================
+    render_html_fragment('<div class="ctx-map">' + "".join(pieces) + "</div>")
+
 
 def render_email_card(
     email_item: dict,
     compact: bool = False,
 ):
-    email_id = email_item.get(
-        "id"
-    )
-
-    result = analysis_results.get(
-        email_id,
-        {},
-    )
-
-    decision = result.get(
-        "decision",
-        {},
-    ) or {}
-
-    context = result.get(
-        "business_context",
-        {},
-    ) or {}
-
-    consequence = result.get(
-        "consequence",
-        {},
-    ) or {}
-
-    company = (
-        context.get("company")
-        or {}
-    )
-
-    crm = (
-        context.get("crm")
-        or {}
-    )
-
-    opportunity = (
-        context.get("opportunity")
-        or {}
-    )
+    email_id = email_item.get("id")
+    result = analysis_results.get(email_id, {})
+    decision = result.get("decision", {}) or {}
+    context = result.get("business_context", {}) or {}
+    consequence = result.get("consequence", {}) or {}
+    company = context.get("company") or {}
+    crm = context.get("crm") or {}
+    opportunity = context.get("opportunity") or {}
+    contact = context.get("contact") or {}
+    calendar = context.get("calendar", {}) or {}
+    dependency = result.get("process_dependency", {}) or {}
 
     body_preview = clean_email_body(
         email_item.get("body"),
-        max_chars=900,
+        max_chars=700 if compact else 1800,
     )
 
-    with st.container(
-        border=True
-    ):
-        top = st.columns(
-            [4.4, 1.3, 1.3, 1.3]
-        )
+    if compact:
+        with st.container(border=True):
+            top = st.columns([4.8, 1.1, 1.1])
+            with top[0]:
+                st.markdown(f"**{email_item.get('subject', 'Untitled email')}**")
+                st.caption(email_item.get("sender", "Unknown sender"))
+            with top[1]:
+                st.metric("Priority", f"{float(email_item.get('priority_score') or 0):.0f}")
+            with top[2]:
+                st.metric(
+                    "Impact",
+                    f"{float(consequence.get('score', email_item.get('consequence_score') or 0)):.0f}",
+                )
+        return
 
+    with st.container(border=True):
+        top = st.columns([4.4, 1.15, 1.15, 1.15])
         with top[0]:
-            st.markdown(
-                f"### {email_item.get('subject', 'Untitled email')}"
-            )
-
-            st.caption(
-                f"From: {email_item.get('sender', 'Unknown sender')}"
-            )
-
+            st.markdown(f"### {email_item.get('subject', 'Untitled email')}")
+            st.caption(f"From {email_item.get('sender', 'Unknown sender')}")
         with top[1]:
-            st.metric(
-                "Priority",
-                f"{float(email_item.get('priority_score') or 0):.0f}",
-            )
-
+            st.metric("Priority", f"{float(email_item.get('priority_score') or 0):.0f}")
         with top[2]:
             st.metric(
                 "Impact",
                 f"{float(consequence.get('score', email_item.get('consequence_score') or 0)):.0f}",
             )
-
         with top[3]:
-            st.metric(
-                "Trust",
-                percentage(
-                    result.get(
-                        "sender_trust",
-                        0,
-                    )
-                ),
-            )
+            st.metric("Trust", percentage(result.get("sender_trust", 0)))
 
         if body_preview:
-            st.markdown(
-                f"""
-                <div class="ctx-email-body">
-                    {html.escape(body_preview)}
-                </div>
-                """,
-                unsafe_allow_html=True,
+            render_html_fragment(
+                f'<div class="ctx-email-body">{html.escape(body_preview)}</div>'
             )
 
-        info = st.columns(3)
+        overview_tab, context_tab, actions_tab = st.tabs(
+            ["Overview", "Context", "Actions"]
+        )
 
-        with info[0]:
-            st.write(
-                "**Intent**"
+        with overview_tab:
+            info = st.columns(3)
+            info[0].metric(
+                "Intent",
+                title_case(result.get("intent", email_item.get("category"))),
+            )
+            info[1].metric(
+                "Decision",
+                title_case(decision.get("action_type")),
+            )
+            info[2].metric(
+                "Risk",
+                str(decision.get("risk_level", "LOW")).title(),
             )
 
-            st.info(
-                title_case(
-                    result.get(
-                        "intent",
-                        email_item.get(
-                            "category"
+            consequence_cols = st.columns(4)
+            consequence_cols[0].metric(
+                "Business impact",
+                f"{consequence.get('score', 0)}/100",
+            )
+            consequence_cols[1].metric(
+                "Revenue at risk",
+                money(consequence.get("potential_revenue_at_risk")),
+            )
+            consequence_cols[2].metric(
+                "Deadline",
+                (
+                    f"{consequence.get('deadline_hours')}h"
+                    if consequence.get("deadline_hours") is not None
+                    else "—"
+                ),
+            )
+            consequence_cols[3].metric(
+                "Deal value",
+                money(consequence.get("deal_value") or crm.get("deal_value")),
+            )
+
+            reasons = consequence.get("reasons", []) or []
+            if reasons:
+                st.markdown("**Why it matters**")
+                for reason in reasons[:5]:
+                    st.write(f"• {reason}")
+
+            if dependency.get("is_blocking"):
+                st.warning(
+                    f"Blocking {dependency.get('blocked_process', 'a downstream process')}: "
+                    f"{dependency.get('downstream_impact', 'downstream impact detected')}."
+                )
+            elif dependency:
+                st.caption("No downstream process dependency detected.")
+
+            st.markdown("**Decision rationale**")
+            st.write(decision.get("reason", "No decision explanation available."))
+            st.caption(
+                f"Confidence {percentage(decision.get('confidence', 0))} · "
+                f"Risk {decision.get('risk_level', 'LOW')}"
+            )
+
+        with context_tab:
+            st.markdown("**Relationship map**")
+            render_context_relationship_map(email_item, result)
+
+            context_cols = st.columns(4)
+            with context_cols[0]:
+                st.caption("Contact")
+                st.write(contact.get("name", "Unknown"))
+                st.caption(contact.get("email", ""))
+            with context_cols[1]:
+                st.caption("Company")
+                st.write(company.get("name", "Not linked"))
+                st.caption(company.get("industry", "Industry not available"))
+            with context_cols[2]:
+                st.caption("CRM")
+                st.write(crm.get("stage", crm.get("status", "No record")))
+                st.caption(money(crm.get("deal_value")))
+            with context_cols[3]:
+                st.caption("Opportunity")
+                st.write(opportunity.get("title", "No active link"))
+                st.caption(money(opportunity.get("value")))
+
+            if calendar.get("meeting_requested"):
+                slot = calendar.get("available_slot") or {}
+                when = " · ".join(
+                    value
+                    for value in [
+                        str(slot.get("date") or ""),
+                        (
+                            f"{slot.get('start')}–{slot.get('end')}"
+                            if slot.get("start") and slot.get("end")
+                            else ""
                         ),
-                    )
+                    ]
+                    if value
                 )
-            )
-
-        with info[1]:
-            st.write(
-                "**Recommended Action**"
-            )
-
-            st.info(
-                title_case(
-                    decision.get(
-                        "action_type"
-                    )
+                st.info(
+                    "Meeting intent detected"
+                    + (f" · Suggested {when}" if when else "")
                 )
-            )
-
-        with info[2]:
-            st.write(
-                "**Risk Level**"
-            )
-
-            risk = (
-                decision.get(
-                    "risk_level",
-                    "LOW",
-                )
-            )
-
-            if risk == "HIGH":
-                st.error(risk)
-            elif risk == "MEDIUM":
-                st.warning(risk)
             else:
-                st.success(risk)
+                st.caption("No meeting request detected in this email.")
 
-        if compact:
-            return
+        with actions_tab:
+            insight = st.session_state.business_insights.get(email_id)
 
-        st.divider()
-
-        st.markdown(
-            "#### 🔗 Business Context Graph"
-        )
-
-        context_cols = st.columns(4)
-
-        with context_cols[0]:
-            st.markdown(
-                "**Contact**"
-            )
-
-            contact = (
-                context.get("contact")
-                or {}
-            )
-
-            st.write(
-                contact.get(
-                    "name",
-                    "Unknown",
-                )
-            )
-
-            st.caption(
-                contact.get(
-                    "email",
-                    "",
-                )
-            )
-
-            st.write(
-                contact.get(
-                    "company",
-                    company.get(
-                        "name",
-                        "Not linked",
-                    ),
-                )
-            )
-
-        with context_cols[1]:
-            st.markdown(
-                "**Company**"
-            )
-
-            st.write(
-                company.get(
-                    "name",
-                    "Not linked",
-                )
-            )
-
-            st.caption(
-                company.get(
-                    "industry",
-                    "Industry not available",
-                )
-            )
-
-        with context_cols[2]:
-            st.markdown(
-                "**CRM Account**"
-            )
-
-            st.write(
-                money(
-                    crm.get(
-                        "deal_value"
-                    )
-                )
-            )
-
-            st.caption(
-                f"Stage: "
-                f"{crm.get('stage', 'Unknown')}"
-            )
-
-            st.caption(
-                f"Status: "
-                f"{crm.get('status', 'Unknown')}"
-            )
-
-        with context_cols[3]:
-            st.markdown(
-                "**Opportunity**"
-            )
-
-            st.write(
-                opportunity.get(
-                    "title",
-                    "No linked opportunity",
-                )
-            )
-
-            if opportunity.get(
-                "value"
-            ):
+            insight_head, insight_action = st.columns([2.5, 1])
+            with insight_head:
+                st.markdown("**Business insight**")
                 st.caption(
-                    money(
-                        opportunity.get(
-                            "value"
+                    "Uses connected context and retrieved evidence to explain business impact."
+                )
+            with insight_action:
+                generate_clicked = st.button(
+                    "Generate insight",
+                    key=f"insight_{email_id}",
+                    use_container_width=True,
+                )
+
+            if generate_clicked:
+                started = time.perf_counter()
+                with st.status(
+                    "Building business insight…",
+                    expanded=False,
+                ) as status:
+                    status.write("Retrieving relevant business context")
+                    generated = generate_email_insight(email_id, result)
+                    elapsed = time.perf_counter() - started
+                    if generated:
+                        generated["latency_seconds"] = round(elapsed, 2)
+                        st.session_state.business_insights[email_id] = generated
+                        status.update(
+                            label=f"Insight ready in {elapsed:.1f}s",
+                            state="complete",
                         )
+                        st.rerun()
+                    else:
+                        status.update(
+                            label="Insight could not be generated",
+                            state="error",
+                        )
+
+            insight = st.session_state.business_insights.get(email_id)
+            if insight:
+                message = str(insight.get("message") or "No insight available.").strip()
+                render_html_fragment(
+                    f'<div class="ctx-insight">{html.escape(message)}</div>'
+                )
+                timing = insight.get("timing") or {}
+                total_ms = timing.get("total_ms")
+                timing_label = (
+                    f"{float(total_ms) / 1000:.1f}s"
+                    if total_ms is not None
+                    else (
+                        f"{float(insight.get('latency_seconds')):.1f}s"
+                        if insight.get("latency_seconds") is not None
+                        else "—"
                     )
                 )
+                st.caption(
+                    f"{insight.get('retrieved_count', 0)} evidence items · "
+                    f"{timing_label} · "
+                    f"{title_case(insight.get('provider', 'local'))}"
+                )
 
+            st.divider()
+            st.markdown("**Review & draft reply**")
             st.caption(
-                f"Risk: "
-                f"{opportunity.get('risk_level', 'Unknown')}"
+                "Prepare a context-aware reply, review it, then create a Gmail draft. "
+                "ContextIQ never sends automatically."
             )
 
-        st.markdown(
-            "#### ⚠️ Consequence Intelligence"
-        )
-
-        consequence_cols = st.columns(
-            4
-        )
-
-        consequence_cols[0].metric(
-            "Business Impact",
-            f"{consequence.get('score', 0)}/100",
-        )
-
-        consequence_cols[1].metric(
-            "Revenue at Risk",
-            money(
-                consequence.get(
-                    "potential_revenue_at_risk"
-                )
-            ),
-        )
-
-        consequence_cols[2].metric(
-            "Deadline",
-            (
-                f"{consequence.get('deadline_hours')}h"
-                if consequence.get(
-                    "deadline_hours"
-                ) is not None
-                else "—"
-            ),
-        )
-
-        consequence_cols[3].metric(
-            "Deal Value",
-            money(
-                consequence.get(
-                    "deal_value"
-                )
-                or crm.get(
-                    "deal_value"
-                )
-            ),
-        )
-
-        for reason in consequence.get(
-            "reasons",
-            [],
-        ):
-            st.write(
-                f"✓ {reason}"
-            )
-
-        dependency = result.get(
-            "process_dependency",
-            {},
-        ) or {}
-
-        st.markdown(
-            "#### 🚧 Process Dependency"
-        )
-
-        if dependency.get(
-            "is_blocking"
-        ):
-            st.warning(
-                "This email is blocking a downstream process."
-            )
-
-            st.write(
-                f"**Process:** "
-                f"{dependency.get('blocked_process', 'Unknown')}"
-            )
-
-            st.write(
-                f"**Impact:** "
-                f"{dependency.get('downstream_impact', 'Unknown')}"
-            )
-        else:
-            st.success(
-                "No downstream process dependency detected."
-            )
-
-        calendar = context.get(
-            "calendar",
-            {},
-        ) or {}
-
-        st.markdown("#### 🕸️ Context Relationship Map")
-        st.graphviz_chart(context_graph_dot(email_item, result), use_container_width=True)
-
-        st.markdown(
-            "#### 📅 Calendar Intelligence"
-        )
-
-        if calendar.get(
-            "meeting_requested"
-        ):
-            st.info(
-                "This sender is requesting a meeting, call, demo, or discussion."
-            )
-
-            slot = calendar.get(
-                "available_slot"
-            )
-
-            if slot:
-                st.write(
-                    f"**Suggested:** "
-                    f"{slot.get('date')} · "
-                    f"{slot.get('start')}–"
-                    f"{slot.get('end')}"
-                )
-        else:
-            st.caption(
-                "No meeting request detected in this email."
-            )
-
-        st.markdown(
-            "#### 🤖 Explainable Decision"
-        )
-
-        decision_cols = st.columns(
-            3
-        )
-
-        decision_cols[0].write(
-            title_case(
-                decision.get(
-                    "action_type"
-                )
-            )
-        )
-
-        decision_cols[1].metric(
-            "Confidence",
-            percentage(
-                decision.get(
-                    "confidence",
-                    0,
-                )
-            ),
-        )
-
-        decision_cols[2].write(
-            f"Risk: **{decision.get('risk_level', 'LOW')}**"
-        )
-
-        st.caption(
-            decision.get(
-                "reason",
-                "No decision explanation available.",
-            )
-        )
-
-        insight = st.session_state.business_insights.get(
-            email_id
-        )
-
-        st.markdown(
-            "#### 🧠 RAG + Gemini Business Insight"
-        )
-
-        if insight:
-            provider = insight.get(
-                "provider",
-                "unknown",
-            )
-
-            model = insight.get(
-                "model",
-                "unknown",
-            )
-
-            st.caption(
-                f"Provider: {provider} · Model: {model}"
-            )
-
-            st.write(
-                insight.get(
-                    "message",
-                    "No insight available.",
-                )
-            )
-
-        if st.button(
-            "✨ Generate Business Insight",
-            key=f"insight_{email_id}",
-            use_container_width=True,
-        ):
-            with st.spinner(
-                "Retrieving history and asking Gemini..."
+            draft = st.session_state.reply_drafts.get(email_id)
+            if st.button(
+                "Generate reply draft",
+                key=f"reply_suggest_{email_id}",
+                use_container_width=True,
             ):
-                try:
-                    rag_result = run_rag(
-                        current_email=dict(
-                            email_item
-                        ),
-                        all_emails=emails,
-                        top_k=3,
-                    )
-
-                    analysis_for_llm = dict(
-                        result
-                    )
-
-                    analysis_for_llm["rag"] = {
-                        "retrieved_count": (
-                            rag_result.get(
-                                "retrieved_count",
-                                0,
-                            )
-                        )
-                    }
-
-                    llm_result = (
-                        generate_business_insight(
-                            email=dict(
-                                email_item
-                            ),
-                            analysis=analysis_for_llm,
-                            rag_context=rag_result.get(
-                                "context",
-                                "",
-                            ),
-                        )
-                    )
-
-                    llm_result[
-                        "retrieved_count"
-                    ] = rag_result.get(
-                        "retrieved_count",
-                        0,
-                    )
-
-                    st.session_state.business_insights[
-                        email_id
-                    ] = llm_result
-
+                with st.spinner("Drafting from email and business evidence…"):
+                    generated = suggest_reply(email_id)
+                if generated:
+                    st.session_state.reply_drafts[email_id] = generated
                     st.rerun()
 
-                except Exception as error:
-                    st.error(
-                        f"Business insight generation failed: {error}"
-                    )
-
-
-        st.markdown("#### Review & Draft Reply")
-        st.caption("Prepare a context-aware reply, review it, then create a Gmail draft only after approval. ContextIQ never sends automatically.")
-
-        draft = st.session_state.reply_drafts.get(email_id)
-        if st.button("Generate Reply Draft", key=f"reply_suggest_{email_id}", use_container_width=True):
-            with st.spinner("Drafting from email + business evidence..."):
-                generated = suggest_reply(email_id)
-            if generated:
-                st.session_state.reply_drafts[email_id] = generated
-                st.rerun()
-
-        if draft:
-            draft_subject = st.text_input(
-                "Draft subject",
-                value=draft.get("subject", ""),
-                key=f"reply_subject_{email_id}",
-            )
-            draft_body = st.text_area(
-                "Draft body — review/edit before creating",
-                value=draft.get("body", ""),
-                height=220,
-                key=f"reply_body_{email_id}",
-            )
-            st.caption(f"Provider: {draft.get('provider', 'local')} · Confidence: {percentage(draft.get('confidence', 0))}")
-            if st.button("Approve & Create Gmail Draft", key=f"reply_create_{email_id}", type="primary", use_container_width=True):
-                with st.spinner("Creating draft in Gmail..."):
-                    created = create_reply_draft(email_id, draft_subject, draft_body)
-                if created:
-                    st.success(created.get("message", "Draft created in Gmail."))
-                    st.session_state.reply_drafts.pop(email_id, None)
+            if draft:
+                draft_subject = st.text_input(
+                    "Draft subject",
+                    value=draft.get("subject", ""),
+                    key=f"reply_subject_{email_id}",
+                )
+                draft_body = st.text_area(
+                    "Draft body — review before creating",
+                    value=draft.get("body", ""),
+                    height=180,
+                    key=f"reply_body_{email_id}",
+                )
+                st.caption(
+                    f"{title_case(draft.get('provider', 'local'))} · "
+                    f"Confidence {percentage(draft.get('confidence', 0))}"
+                )
+                if st.button(
+                    "Approve & create Gmail draft",
+                    key=f"reply_create_{email_id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    with st.spinner("Creating draft in Gmail…"):
+                        created = create_reply_draft(
+                            email_id,
+                            draft_subject,
+                            draft_body,
+                        )
+                    if created:
+                        st.success(created.get("message", "Draft created in Gmail."))
+                        st.session_state.reply_drafts.pop(email_id, None)
 
 
 # ==========================================================
@@ -1230,16 +981,9 @@ def dashboard_page():
         or current_user().split("@")[0]
     )
 
-    st.markdown(
-        f"""
-        <div class="ctx-page-head">
-            <div>
-                <div class="ctx-page-title">Good to see you, {html.escape(first_name)}.</div>
-                <div class="ctx-page-sub">Here is the operating picture that needs your attention now.</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    page_header(
+        f"Good to see you, {first_name}.",
+        "A concise view of the work, relationships and decisions that need attention.",
     )
 
     priority_count = sum((e.get("priority_score") or 0) >= 70 for e in emails)
@@ -1266,17 +1010,14 @@ def dashboard_page():
     cols = st.columns(5)
     for col, (label, value) in zip(cols, metrics):
         with col:
-            st.markdown(
-                f"""
-                <div class="ctx-kpi">
-                    <div class="ctx-kpi-label">{html.escape(label)}</div>
-                    <div class="ctx-kpi-value">{value}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            render_html_fragment(
+                f'<div class="ctx-kpi">'
+                f'<div class="ctx-kpi-label">{html.escape(label)}</div>'
+                f'<div class="ctx-kpi-value">{value}</div>'
+                f'</div>'
             )
 
-    st.markdown("<div style='height:.55rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:.48rem'></div>", unsafe_allow_html=True)
 
     attention = []
     for email_item in emails:
@@ -1295,54 +1036,46 @@ def dashboard_page():
     left, right = st.columns([1.62, 1], gap="medium")
 
     with left:
-        st.markdown('<div class="ctx-panel-title">Priority queue</div>', unsafe_allow_html=True)
+        st.markdown("**Priority queue**")
 
         if not attention:
-            st.markdown(
+            render_html_fragment(
                 '<div class="ctx-panel"><div class="ctx-empty">'
                 'Nothing urgent is competing for attention right now.'
-                '</div></div>',
-                unsafe_allow_html=True,
+                '</div></div>'
             )
         else:
             rows = []
-            for impact, email_item, result in attention[:4]:
+            for impact, email_item, result in attention[:5]:
                 decision = result.get("decision", {}) or {}
                 action = title_case(decision.get("action_type"))
                 subject = html.escape(str(email_item.get("subject") or "Untitled"))
                 sender = html.escape(str(email_item.get("sender") or "Unknown sender"))
                 rows.append(
-                    f"""
-                    <div class="ctx-row">
-                        <div class="ctx-row-main">
-                            <div class="ctx-row-title">{subject}</div>
-                            <div class="ctx-row-sub">{sender} · {html.escape(action)}</div>
-                        </div>
-                        <div class="ctx-score">{impact:.0f}</div>
-                    </div>
-                    """
+                    '<div class="ctx-row"><div class="ctx-row-main">'
+                    f'<div class="ctx-row-title">{subject}</div>'
+                    f'<div class="ctx-row-sub">{sender} · {html.escape(action)}</div>'
+                    '</div>'
+                    f'<div class="ctx-score">{impact:.0f}</div></div>'
                 )
 
-            st.markdown(
-                '<div class="ctx-panel">' + "".join(rows) + "</div>",
-                unsafe_allow_html=True,
-            )
+            render_html_fragment('<div class="ctx-panel">' + "".join(rows) + "</div>")
 
         if st.button("Open ranked inbox", use_container_width=True):
             st.session_state.page = "Intelligent Inbox"
             st.rerun()
 
     with right:
-        top_r1, top_r2 = st.columns([1.5, 1])
+        top_r1, top_r2 = st.columns([1.45, 1])
 
         with top_r1:
-            st.markdown('<div class="ctx-panel-title">Today</div>', unsafe_allow_html=True)
+            st.markdown("**Today**")
 
         with top_r2:
             generate_brief = st.button("Build brief", use_container_width=True)
 
         if generate_brief:
-            with st.spinner("Building operating brief..."):
+            with st.spinner("Building operating brief…"):
                 brief = api_post(
                     "/assistant/ask",
                     json_body={
@@ -1352,7 +1085,7 @@ def dashboard_page():
                         ),
                         "top_k": 8,
                     },
-                    timeout=180,
+                    timeout=60,
                 )
             if brief:
                 st.session_state["morning_brief"] = brief
@@ -1362,11 +1095,8 @@ def dashboard_page():
             answer = str(brief.get("answer", "")).strip()
             if len(answer) > 520:
                 answer = answer[:517].rstrip() + "..."
-            st.markdown(
-                f'<div class="ctx-brief">{html.escape(answer)}</div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
+            render_html_fragment(f'<div class="ctx-brief">{html.escape(answer)}</div>')
+            st.markdown("<div style='height:.36rem'></div>", unsafe_allow_html=True)
 
         commitment_rows = []
         for item in open_commitments[:3]:
@@ -1374,50 +1104,32 @@ def dashboard_page():
             due = item.get("due_at")
             due_label = due[:10] if isinstance(due, str) and due else "No due date"
             commitment_rows.append(
-                f"""
-                <div class="ctx-row">
-                    <div class="ctx-row-main">
-                        <div class="ctx-row-title">{action}</div>
-                        <div class="ctx-row-sub">{html.escape(title_case(item.get("direction")))}</div>
-                    </div>
-                    <span class="ctx-pill">{html.escape(due_label)}</span>
-                </div>
-                """
+                '<div class="ctx-row"><div class="ctx-row-main">'
+                f'<div class="ctx-row-title">{action}</div>'
+                f'<div class="ctx-row-sub">{html.escape(title_case(item.get("direction")))}</div>'
+                '</div>'
+                f'<span class="ctx-pill">{html.escape(due_label)}</span></div>'
             )
 
-        if commitment_rows:
-            st.markdown(
-                '<div class="ctx-panel">'
-                '<div class="ctx-panel-title">Open commitments</div>'
-                + "".join(commitment_rows)
-                + "</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div class="ctx-panel">'
-                '<div class="ctx-panel-title">Open commitments</div>'
-                '<div class="ctx-empty">No open commitments.</div>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
+        commitment_content = (
+            "".join(commitment_rows)
+            if commitment_rows
+            else '<div class="ctx-empty">No open commitments.</div>'
+        )
+        render_html_fragment(
+            '<div class="ctx-panel"><div class="ctx-panel-title">Open commitments</div>'
+            + commitment_content
+            + '</div>'
+        )
 
-        st.markdown("<div style='height:.35rem'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:.32rem'></div>", unsafe_allow_html=True)
 
-        st.markdown(
-            f"""
-            <div class="ctx-panel">
-                <div class="ctx-panel-title">Action control</div>
-                <div class="ctx-row">
-                    <div class="ctx-row-main">
-                        <div class="ctx-row-title">{len(pending_actions)} awaiting approval</div>
-                        <div class="ctx-row-sub">{len(executed_actions)} actions executed with human approval</div>
-                    </div>
-                    <span class="ctx-pill">Human-in-loop</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_html_fragment(
+            '<div class="ctx-panel"><div class="ctx-panel-title">Action control</div>'
+            '<div class="ctx-row"><div class="ctx-row-main">'
+            f'<div class="ctx-row-title">{len(pending_actions)} awaiting approval</div>'
+            f'<div class="ctx-row-sub">{len(executed_actions)} actions executed with human approval</div>'
+            '</div><span class="ctx-pill">Human-in-loop</span></div></div>'
         )
 
         if st.button("Review action queue", use_container_width=True):
@@ -1430,88 +1142,103 @@ def dashboard_page():
 # ==========================================================
 
 def inbox_page():
-    st.title(
-        "Intelligent Inbox"
-    )
-
-    st.caption(
-        "The inbox ranked by business meaning, risk, consequence, and action."
+    page_header(
+        "Inbox",
+        "Rank communication by business impact, urgency and relationship context.",
     )
 
     if not emails:
-        st.info(
-            "No emails found for this user."
-        )
+        st.info("No emails found for this user.")
         return
 
-    sort_mode = st.selectbox(
-        "Rank emails by",
-        [
-            "Business Impact",
-            "Priority",
-            "Newest",
-        ],
-    )
-
-    def sort_key(
-        email_item,
-    ):
-        result = analysis_results.get(
-            email_item.get("id"),
-            {},
+    controls = st.columns([1.25, 2.2])
+    with controls[0]:
+        sort_mode = st.selectbox(
+            "Rank by",
+            ["Business Impact", "Priority", "Newest"],
+            label_visibility="collapsed",
         )
+    with controls[1]:
+        search_text = st.text_input(
+            "Search inbox",
+            placeholder="Search sender or subject…",
+            label_visibility="collapsed",
+        ).strip().lower()
 
+    def sort_key(email_item):
+        result = analysis_results.get(email_item.get("id"), {})
         if sort_mode == "Business Impact":
-            consequence = result.get(
-                "consequence",
-                {},
-            ) or {}
+            consequence = result.get("consequence", {}) or {}
+            return consequence.get(
+                "score",
+                email_item.get("consequence_score") or 0,
+            ) or 0
+        if sort_mode == "Priority":
+            return email_item.get("priority_score") or 0
+        return email_item.get("received_at", "")
 
-            return (
+    filtered = []
+    for email_item in emails:
+        haystack = (
+            f"{email_item.get('subject', '')} "
+            f"{email_item.get('sender', '')}"
+        ).lower()
+        if not search_text or search_text in haystack:
+            filtered.append(email_item)
+
+    ordered = sorted(filtered, key=sort_key, reverse=True)
+
+    if not ordered:
+        st.info("No messages match the current search.")
+        return
+
+    valid_ids = [item.get("id") for item in ordered if item.get("id") is not None]
+    selected_id = st.session_state.get("selected_email_id")
+    if selected_id not in valid_ids:
+        st.session_state.selected_email_id = valid_ids[0]
+        selected_id = valid_ids[0]
+
+    list_col, detail_col = st.columns([0.82, 1.72], gap="medium")
+
+    with list_col:
+        st.caption(f"{len(ordered)} messages")
+        for email_item in ordered[:40]:
+            email_id = email_item.get("id")
+            result = analysis_results.get(email_id, {})
+            consequence = result.get("consequence", {}) or {}
+            impact = float(
                 consequence.get(
                     "score",
-                    email_item.get(
-                        "consequence_score"
-                    )
-                    or 0,
+                    email_item.get("consequence_score") or 0,
                 )
                 or 0
             )
+            subject = str(email_item.get("subject") or "Untitled email")
+            selected = email_id == selected_id
 
-        if sort_mode == "Priority":
-            return (
-                email_item.get(
-                    "priority_score"
-                )
-                or 0
+            label = subject if len(subject) <= 42 else subject[:39].rstrip() + "…"
+            if st.button(
+                label,
+                key=f"inbox_select_{email_id}",
+                type="primary" if selected else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state.selected_email_id = email_id
+                st.rerun()
+
+            sender = str(email_item.get("sender") or "Unknown sender")
+            sender = sender if len(sender) <= 42 else sender[:39].rstrip() + "…"
+            st.caption(
+                f"{sender} · Impact {impact:.0f} · "
+                f"Priority {float(email_item.get('priority_score') or 0):.0f}"
             )
 
-        return (
-            email_item.get(
-                "received_at",
-                "",
-            )
+    with detail_col:
+        selected = next(
+            (item for item in ordered if item.get("id") == selected_id),
+            ordered[0],
         )
-
-    ordered = sorted(
-        emails,
-        key=sort_key,
-        reverse=True,
-    )
-
-    for email_item in ordered:
-        render_email_card(
-            email_item,
-            compact=True,
-        )
-
-        with st.expander(
-            "Open full intelligence"
-        ):
-            render_email_card(
-                email_item,
-                compact=False,
-            )
+        render_email_card(selected, compact=False)
 
 
 # ==========================================================
@@ -1519,12 +1246,9 @@ def inbox_page():
 # ==========================================================
 
 def action_center_page():
-    st.title(
-        "Action Center"
-    )
-
-    st.caption(
-        "Every recommendation follows a controlled approval → execution workflow."
+    page_header(
+        "Actions",
+        "Review recommendations, approvals and executed actions in one controlled queue.",
     )
 
     stats = st.columns(
@@ -1750,12 +1474,9 @@ def action_center_page():
 # ==========================================================
 
 def opportunity_page():
-    st.title(
-        "Opportunity Radar"
-    )
-
-    st.caption(
-        "A revenue-focused view of opportunities discovered from email + CRM context."
+    page_header(
+        "Opportunities",
+        "Track revenue signals, account momentum and risk discovered from connected context.",
     )
 
     opportunities = []
@@ -1971,12 +1692,9 @@ def opportunity_page():
 # ==========================================================
 
 def calendar_page():
-    st.title(
-        "Calendar"
-    )
-
-    st.caption(
-        "Meeting dates, suggested slots, and the company context extracted from the email requesting the meeting."
+    page_header(
+        "Calendar",
+        "Connect meeting intent, suggested availability and account context.",
     )
 
     stored_events = get_calendar_events()
@@ -2266,12 +1984,9 @@ def calendar_page():
 # ==========================================================
 
 def crm_page():
-    st.title(
-        "CRM Intelligence"
-    )
-
-    st.caption(
-        "A dedicated account view connecting companies, contacts, deal value, stages, risks, and related email context."
+    page_header(
+        "CRM",
+        "A unified account view across companies, contacts, deal value, stages and communication.",
     )
 
     accounts = {}
@@ -2597,12 +2312,9 @@ def crm_page():
 # ==========================================================
 
 def security_page():
-    st.title(
-        "Security Center"
-    )
-
-    st.caption(
-        "A focused threat posture view for spam, phishing, sender trust, and security review."
+    page_header(
+        "Security",
+        "Review sender trust, suspicious communication and messages that need security attention.",
     )
 
     threat_items = []
@@ -2836,12 +2548,9 @@ def parse_business_information(
 
 
 def render_attachments():
-    st.title(
-        "Documents"
-    )
-
-    st.caption(
-        "Every document is connected to its source email, risk profile, business information, and extracted summary."
+    page_header(
+        "Documents",
+        "Review extracted documents alongside their source communication and business context.",
     )
 
     attachment_rows = []
@@ -3107,8 +2816,10 @@ def render_attachments():
 # ==========================================================
 
 def ask_contextiq_page():
-    st.markdown("## Ask ContextIQ")
-    st.caption("Ask decision-oriented questions across your connected email, documents, CRM, opportunities, contacts, companies, and calendar. Answers are grounded in retrieved evidence.")
+    page_header(
+        "Ask ContextIQ",
+        "Ask decision-oriented questions across connected communication, CRM, documents and calendar evidence.",
+    )
 
     suggestions = [
         "What should I prioritize today?",

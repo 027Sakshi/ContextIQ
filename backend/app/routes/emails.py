@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from pydantic import BaseModel, Field
 
@@ -29,7 +30,7 @@ from backend.app.services.decision_service import decide_action
 from backend.app.services.commitment_service import sync_email_commitments
 from backend.app.services.gmail_action_service import create_gmail_draft
 from backend.app.services.knowledge_service import retrieve_business_knowledge
-from backend.app.services.llm_service import generate_reply_draft
+from backend.app.services.llm_service import generate_business_insight, generate_reply_draft
 
 from backend.app.services.gmail_service import (
     get_gmail_service,
@@ -403,6 +404,97 @@ def import_gmail_emails(
         "emails": imported,
 
         "error_details": errors
+    }
+
+
+# ==========================================================
+# BUSINESS INSIGHT
+# ==========================================================
+
+class InsightRequest(BaseModel):
+    analysis: dict = Field(default_factory=dict)
+
+
+@router.post("/{email_id}/insight")
+def generate_email_business_insight(
+    email_id: int,
+    payload: InsightRequest,
+    db: Session = Depends(get_db),
+):
+    user = require_current_user()
+    email = (
+        db.query(Email)
+        .filter(
+            Email.id == email_id,
+            Email.user_email == user,
+        )
+        .first()
+    )
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    started = time.perf_counter()
+    query = (
+        f"Email subject: {email.subject}\n"
+        f"Sender: {email.sender}\n"
+        f"Body: {str(email.body or '')[:2400]}"
+    )
+
+    retrieval_started = time.perf_counter()
+    retrieval = retrieve_business_knowledge(
+        db,
+        user,
+        query,
+        top_k=6,
+    )
+    retrieval_ms = round(
+        (time.perf_counter() - retrieval_started) * 1000,
+        1,
+    )
+
+    evidence = retrieval.get("evidence", [])
+    rag_context = "\n\n".join(
+        f"[{item.get('evidence_id')}] "
+        f"{str(item.get('source_type') or '').upper()} — "
+        f"{item.get('title')}\n{item.get('excerpt')}"
+        for item in evidence
+    )
+
+    analysis = dict(payload.analysis or {})
+    analysis["rag"] = {
+        "retrieved_count": len(evidence),
+        "retrieval_model": retrieval.get("retrieval_model"),
+    }
+
+    generation_started = time.perf_counter()
+    insight = generate_business_insight(
+        email={
+            "id": email.id,
+            "subject": email.subject,
+            "sender": email.sender,
+            "body": email.body,
+        },
+        analysis=analysis,
+        rag_context=rag_context,
+    )
+    generation_ms = round(
+        (time.perf_counter() - generation_started) * 1000,
+        1,
+    )
+
+    return {
+        **insight,
+        "retrieved_count": len(evidence),
+        "retrieval_model": retrieval.get("retrieval_model"),
+        "evidence": evidence,
+        "timing": {
+            "retrieval_ms": retrieval_ms,
+            "generation_ms": generation_ms,
+            "total_ms": round(
+                (time.perf_counter() - started) * 1000,
+                1,
+            ),
+        },
     }
 
 

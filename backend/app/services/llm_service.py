@@ -20,6 +20,14 @@ GEMINI_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
 
+GEMINI_TIMEOUT_SECONDS = float(
+    os.getenv("GEMINI_TIMEOUT_SECONDS", "18")
+)
+
+GEMINI_MAX_RETRIES = int(
+    os.getenv("GEMINI_MAX_RETRIES", "0")
+)
+
 
 # ==========================================================
 # CLIENT
@@ -38,6 +46,8 @@ def _get_client() -> OpenAI | None:
     return OpenAI(
         api_key=GEMINI_API_KEY,
         base_url=GEMINI_BASE_URL,
+        timeout=GEMINI_TIMEOUT_SECONDS,
+        max_retries=GEMINI_MAX_RETRIES,
     )
 
 
@@ -383,7 +393,7 @@ Rules:
                 },
             ],
             temperature=0.2,
-            max_tokens=900,
+            max_tokens=650,
         )
 
         content = (
@@ -569,7 +579,7 @@ Rules:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=1100,
+            max_tokens=750,
         )
         content = response.choices[0].message.content if response.choices else ""
         parsed = _extract_json(content)
