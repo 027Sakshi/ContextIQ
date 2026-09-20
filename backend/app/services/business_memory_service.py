@@ -325,18 +325,23 @@ def sync_business_memory_from_email(
         )
     )
 
-    company_name = (
-        (
-            contact.company.strip()
-            if (
-                contact
-                and contact.company
-            )
-            else None
+    existing_contact_company = (
+        contact.company.strip()
+        if (
+            contact
+            and contact.company
         )
-        or body_company
+        else None
+    )
+
+    # Evidence from the current email wins over stale contact
+    # history. This is important when one real tester mailbox is
+    # used to simulate multiple business senders during the demo.
+    company_name = (
+        body_company
         or entity_company
         or domain_company
+        or existing_contact_company
     )
 
     # Personal Gmail/Outlook addresses are very common for
@@ -530,6 +535,11 @@ def sync_business_memory_from_email(
         and intent
         in OPPORTUNITY_INTENTS
     ):
+        opportunity_title = (
+            email.subject
+            or "Detected opportunity"
+        ).strip()
+
         opportunity = (
             db.query(
                 Opportunity
@@ -540,6 +550,8 @@ def sync_business_memory_from_email(
                 Opportunity.company_name.ilike(
                     company_name
                 ),
+                Opportunity.title
+                == opportunity_title,
             )
             .first()
         )
@@ -560,10 +572,7 @@ def sync_business_memory_from_email(
             opportunity = Opportunity(
                 user_email=user_email,
                 company_name=company_name,
-                title=(
-                    email.subject
-                    or "Detected opportunity"
-                ),
+                title=opportunity_title,
                 value=budget_value,
                 stage=stage,
                 risk_level=risk,

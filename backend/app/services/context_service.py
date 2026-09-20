@@ -171,11 +171,20 @@ def build_business_context(
 
     company_name = None
 
-    if contact and contact.company:
-        company_name = contact.company.strip()
-
-    if not company_name and body_company:
+    # The current email is stronger evidence than a historical
+    # Contact.company value. This allows one tester Gmail account
+    # to represent different demo companies without cross-linking.
+    if body_company:
         company_name = body_company
+
+    if (
+        not company_name
+        and contact
+        and contact.company
+    ):
+        company_name = (
+            contact.company.strip()
+        )
 
     # ======================================================
     # COMPANY LOOKUP

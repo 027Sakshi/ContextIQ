@@ -12,6 +12,7 @@ from backend.app.models.opportunity import Opportunity
 from backend.app.models.contact import Contact
 from backend.app.user_context import require_current_user
 from backend.app.services.calendar_google_service import create_calendar_event, find_available_slot, LOCAL_TZ
+from backend.app.services.context_service import find_company_name_from_body
 
 
 # ==========================================================
@@ -185,15 +186,28 @@ def create_or_update_crm(
             or contact_name
         )
 
-    company_name = extract_company_name(
-        email.sender,
-        contact
+    body_company = (
+        find_company_name_from_body(
+            email.body
+            or ""
+        )
     )
 
-    if contact and contact.company:
+    # Explicit company identity from this email wins.
+    company_name = (
+        body_company
+        or extract_company_name(
+            email.sender,
+            contact
+        )
+    )
 
-        company_name = (
-            contact.company
+    if (
+        contact
+        and body_company
+    ):
+        contact.company = (
+            body_company
         )
 
     # ------------------------------------------------------
@@ -247,13 +261,21 @@ def create_or_update_crm(
     # Find existing opportunity
     # ------------------------------------------------------
 
+    opportunity_title = (
+        email.subject
+        or "Detected opportunity"
+    ).strip()
+
     opportunity = (
         db.query(Opportunity)
         .filter(
             Opportunity.company_name.ilike(
                 company_name
             ),
-            Opportunity.user_email == user_email
+            Opportunity.user_email
+            == user_email,
+            Opportunity.title
+            == opportunity_title,
         )
         .first()
     )
@@ -262,7 +284,7 @@ def create_or_update_crm(
 
         # Update existing opportunity
         opportunity.title = (
-            email.subject
+            opportunity_title
         )
 
         if not opportunity.stage:
@@ -279,7 +301,7 @@ def create_or_update_crm(
         opportunity = Opportunity(
             user_email=user_email,
             company_name=company_name,
-            title=email.subject,
+            title=opportunity_title,
             value=None,
             stage="new",
             risk_level="MEDIUM"

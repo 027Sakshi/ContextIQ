@@ -343,3 +343,207 @@ def test_security_email_does_not_create_business_records():
     finally:
         clear_current_user()
         db.close()
+
+
+
+def test_explicit_company_overrides_stale_contact_company():
+    db = make_db()
+
+    try:
+        set_current_user(
+            "owner@example.com"
+        )
+
+        db.add(
+            Contact(
+                user_email="owner@example.com",
+                name="Sakshi Giglani",
+                email="sakshi@gmail.com",
+                company="Orion Industries",
+            )
+        )
+
+        db.add(
+            Company(
+                user_email="owner@example.com",
+                name="Orion Industries",
+                domain=None,
+                industry=None,
+            )
+        )
+
+        db.add(
+            CRMRecord(
+                user_email="owner@example.com",
+                company_name="Orion Industries",
+                contact_name="Sakshi Giglani",
+                deal_value=600000,
+                stage="Renewal",
+                status="Active",
+            )
+        )
+
+        db.add(
+            Opportunity(
+                user_email="owner@example.com",
+                company_name="Orion Industries",
+                title="Renewal Decision Required Tomorrow",
+                value=600000,
+                stage="Renewal",
+                risk_level="HIGH",
+            )
+        )
+
+        email = Email(
+            user_email="owner@example.com",
+            sender=(
+                "Sakshi Giglani "
+                "<sakshi@gmail.com>"
+            ),
+            recipient="owner@example.com",
+            subject="Pricing request for 75 licenses",
+            body=(
+                "Hi, I am Riya from Nova Technologies. "
+                "We need pricing for 75 licenses. "
+                "Our estimated budget is ?6 lakh."
+            ),
+        )
+
+        db.add(email)
+        db.commit()
+
+        sync_business_memory_from_email(
+            email=email,
+            analysis={
+                "intent": "sales_inquiry",
+                "entities": {
+                    "company": None,
+                    "budget": "?6 lakh",
+                },
+            },
+            threat={
+                "spam_score": 0.0,
+                "phishing_score": 0.0,
+            },
+            db=db,
+        )
+
+        assert (
+            db.query(CRMRecord)
+            .filter(
+                CRMRecord.user_email
+                == "owner@example.com",
+                CRMRecord.company_name
+                == "Nova Technologies",
+            )
+            .count()
+            == 1
+        )
+
+        assert (
+            db.query(Opportunity)
+            .filter(
+                Opportunity.user_email
+                == "owner@example.com",
+                Opportunity.company_name
+                == "Nova Technologies",
+                Opportunity.title
+                == "Pricing request for 75 licenses",
+            )
+            .count()
+            == 1
+        )
+
+        # The older Orion opportunity must remain untouched.
+        assert (
+            db.query(Opportunity)
+            .filter(
+                Opportunity.user_email
+                == "owner@example.com",
+                Opportunity.company_name
+                == "Orion Industries",
+            )
+            .count()
+            == 1
+        )
+
+    finally:
+        clear_current_user()
+        db.close()
+
+
+def test_company_can_have_multiple_distinct_opportunities():
+    db = make_db()
+
+    try:
+        set_current_user(
+            "owner@example.com"
+        )
+
+        first = Email(
+            user_email="owner@example.com",
+            sender="Buyer <buyer@acme.com>",
+            recipient="owner@example.com",
+            subject="Initial pricing request",
+            body="We need pricing for 25 licenses.",
+        )
+
+        second = Email(
+            user_email="owner@example.com",
+            sender="Buyer <buyer@acme.com>",
+            recipient="owner@example.com",
+            subject="Expansion pricing request",
+            body="We need pricing for 100 more licenses.",
+        )
+
+        db.add_all(
+            [
+                first,
+                second,
+            ]
+        )
+
+        db.commit()
+
+        analysis = {
+            "intent": "sales_inquiry",
+            "entities": {
+                "company": "Acme",
+                "budget": None,
+            },
+        }
+
+        threat = {
+            "spam_score": 0.0,
+            "phishing_score": 0.0,
+        }
+
+        sync_business_memory_from_email(
+            email=first,
+            analysis=analysis,
+            threat=threat,
+            db=db,
+        )
+
+        sync_business_memory_from_email(
+            email=second,
+            analysis=analysis,
+            threat=threat,
+            db=db,
+        )
+
+        assert (
+            db.query(Opportunity)
+            .filter(
+                Opportunity.user_email
+                == "owner@example.com",
+                Opportunity.company_name
+                == "Acme",
+            )
+            .count()
+            == 2
+        )
+
+    finally:
+        clear_current_user()
+        db.close()
