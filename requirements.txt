@@ -15,3 +15,10 @@ psycopg2-binary
 scikit-learn
 sentence-transformers
 pypdf
+pypdf
+cryptography
+python-docx
+itsdangerous
+numpy
+pydantic
+starlette
