@@ -1,4 +1,4 @@
-﻿fastapi==0.141.1
+fastapi==0.141.1
 uvicorn==0.52.4
 SQLAlchemy==2.0.52
 python-dotenv==1.2.3
@@ -11,14 +11,10 @@ google-auth==2.57.1
 google-auth-httplib2==0.4.2
 google-auth-oauthlib==1.4.1
 google-genai==2.23.0
-psycopg2-binary
-scikit-learn
-sentence-transformers
-pypdf
-pypdf
-cryptography
-python-docx
-itsdangerous
-numpy
-pydantic
-starlette
+pypdf==6.18.0
+python-docx==1.2.0
+scikit-learn==1.9.0
+pytest>=8.0,<10.0
+itsdangerous==2.2.0
+cryptography==50.0.1
+sentence-transformers>=5.1,<6.0

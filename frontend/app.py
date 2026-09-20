@@ -30,12 +30,8 @@ from frontend.auth import (
 # CONFIGURATION
 # ==========================================================
 
-import os
+API_URL = os.getenv("CONTEXTIQ_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
-API_URL = os.getenv(
-    "CONTEXTIQ_API_URL",
-    "http://127.0.0.1:8000"
-).rstrip("/")
 
 # ==========================================================
 # PAGE CONFIG
