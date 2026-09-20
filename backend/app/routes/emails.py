@@ -21,6 +21,7 @@ from backend.app.models.attachment import Attachment
 from backend.app.models.action import Action
 
 from backend.app.services.ai_service import analyze_email
+from backend.app.services.business_memory_service import sync_business_memory_from_email
 from backend.app.services.threat_service import analyze_threat
 from backend.app.services.context_service import build_business_context
 from backend.app.services.consequence_service import calculate_consequence
@@ -1054,6 +1055,17 @@ def analyze_all_emails(
             sender=email.sender,
             subject=email.subject,
             body=email.body
+        )
+
+        # --------------------------------------------------
+        # INTERNAL BUSINESS MEMORY
+        # --------------------------------------------------
+
+        sync_business_memory_from_email(
+            email=email,
+            analysis=ai_result,
+            threat=threat_result,
+            db=db,
         )
 
         # --------------------------------------------------

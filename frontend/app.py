@@ -1429,6 +1429,13 @@ def action_center_page():
                                 "Action executed successfully.",
                             )
                         )
+
+                        # Executed actions can modify CRM,
+                        # opportunities or calendar state.
+                        # Rebuild business context before rendering
+                        # the next page.
+                        st.session_state.analysis = None
+
                         st.rerun()
 
     st.divider()
